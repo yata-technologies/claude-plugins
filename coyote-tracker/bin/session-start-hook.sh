@@ -15,6 +15,10 @@
 set -uo pipefail
 
 DIR="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}/.claude"
+# State ($DIR/sessions) stays anchored to the consumer repo; sibling scripts
+# resolve from the plugin install dir under the plugin edition (COY-342),
+# falling back to $DIR/bin for the legacy copy-edition layout.
+BIN_DIR="${CLAUDE_PLUGIN_ROOT:-$DIR}/bin"
 
 input=$(cat 2>/dev/null || true)
 sid=$(printf '%s' "$input" | jq -r '.session_id // ""' 2>/dev/null || true)
@@ -39,7 +43,7 @@ case "$src" in
     # Explicit user reset (/clear) — always a fresh window.
     date +%s > "$LANE/timer-start"
     : > "$LANE/turn-log"
-    CLAUDE_SWEEP_SKIP_SID="$sid" "$DIR/bin/sweep-stale-lanes.sh" >/dev/null 2>&1 || true
+    CLAUDE_SWEEP_SKIP_SID="$sid" "$BIN_DIR/sweep-stale-lanes.sh" >/dev/null 2>&1 || true
     echo 'Coyote Tracker: timer (re)started on /clear (see statusline). Create Coyote task BEFORE work. Offer to log at natural breakpoints. Lead your FIRST response with 🕐 HH:MM:SS to confirm the timer. See CLAUDE-COYOTE-HUMAN.md.'
     ;;
   startup)
@@ -59,7 +63,7 @@ case "$src" in
       : > "$LANE/turn-log"
       echo 'Coyote Tracker: timer auto-started (see statusline). Create Coyote task BEFORE work. Offer to log at natural breakpoints. Lead your FIRST response of this session with 🕐 HH:MM:SS to confirm the timer — skip the clock on subsequent turns. See CLAUDE-COYOTE-HUMAN.md.'
     fi
-    CLAUDE_SWEEP_SKIP_SID="$sid" "$DIR/bin/sweep-stale-lanes.sh" >/dev/null 2>&1 || true
+    CLAUDE_SWEEP_SKIP_SID="$sid" "$BIN_DIR/sweep-stale-lanes.sh" >/dev/null 2>&1 || true
     ;;
   resume)
     # Always touch lane mtime + sweep peers on resume — without this, an
@@ -74,7 +78,7 @@ case "$src" in
     else
       echo 'Coyote Tracker: resumed session — existing timer preserved. Create Coyote task BEFORE work. Offer to log at natural breakpoints.'
     fi
-    CLAUDE_SWEEP_SKIP_SID="$sid" "$DIR/bin/sweep-stale-lanes.sh" >/dev/null 2>&1 || true
+    CLAUDE_SWEEP_SKIP_SID="$sid" "$BIN_DIR/sweep-stale-lanes.sh" >/dev/null 2>&1 || true
     ;;
   *)
     # Unknown source — be conservative. Don't touch state, just emit minimal reminder.

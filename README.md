@@ -31,10 +31,11 @@ coyote-tracker/
 ├── .claude-plugin/plugin.json     version knob (semver) — bump to release
 ├── hooks/hooks.json               SessionStart / UserPromptSubmit / PreToolUse /
 │                                    PostToolUse / Stop — all via ${CLAUDE_PLUGIN_ROOT}/bin
-├── bin/*.sh                       Tracker scripts (pure bash + jq + awk)  ⚠ see PORTING.md
+├── bin/*.sh                       Tracker scripts (pure bash + jq + awk); ported to
+│                                    ${CLAUDE_PLUGIN_ROOT} for sibling calls (PORTING.md §1)
 ├── commands/                      /aw /bk /coyote-tracker:init
 ├── skills/coyote-worklog/         operating rules (replaces the CLAUDE.md-referenced
-│                                    doc + auto-memory template)  ⚠ skeleton, see PORTING.md
+│                                    doc + auto-memory template): SKILL.md + reference.md
 └── templates/                     seeds copied into the consumer repo by tracker-init.sh
 ```
 
@@ -54,5 +55,6 @@ for the matcher-broadening work this still requires.
 
 ---
 
-Provenance: scripts copied verbatim from `coyote/.claude/bin` at scaffold time. Tracked
-under COY-342. **This repo is a prep skeleton — read PORTING.md before enabling anywhere.**
+Provenance: scripts sourced from `coyote/.claude/bin` at scaffold time, then ported for
+plugin path resolution. Tracked under COY-342. **Not yet enable-ready — read PORTING.md
+(§2 backend config + §3/§4 consumer wiring + §6 smoke tests remain) before enabling.**

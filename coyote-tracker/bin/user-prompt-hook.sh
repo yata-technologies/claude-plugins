@@ -20,6 +20,10 @@
 set -uo pipefail
 
 DIR="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}/.claude"
+# State ($DIR/sessions) stays anchored to the consumer repo; sibling scripts
+# resolve from the plugin install dir under the plugin edition (COY-342),
+# falling back to $DIR/bin for the legacy copy-edition layout.
+BIN_DIR="${CLAUDE_PLUGIN_ROOT:-$DIR}/bin"
 
 input=$(cat)
 sid=$(printf '%s' "$input" | jq -r '.session_id // ""' 2>/dev/null || true)
@@ -38,7 +42,7 @@ mkdir -p "$LANE"
 touch "$LANE/last-active"
 
 # Heal must run before reading timer-start so elapsed is accurate.
-heal=$("$DIR/bin/heal-timer.sh" "$sid" 2>/dev/null || true)
+heal=$("$BIN_DIR/heal-timer.sh" "$sid" 2>/dev/null || true)
 
 prompt_stripped=$(printf '%s' "$input" | jq -r '.prompt // ""' | tr -d '[:space:]')
 prompt_full=$(printf '%s' "$input" | jq -r '.prompt // ""')

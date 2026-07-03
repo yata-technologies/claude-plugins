@@ -31,6 +31,10 @@
 set -uo pipefail
 
 DIR="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}/.claude"
+# State ($DIR/sessions) stays anchored to the consumer repo; sibling scripts
+# resolve from the plugin install dir under the plugin edition (COY-342),
+# falling back to $DIR/bin for the legacy copy-edition layout.
+BIN_DIR="${CLAUDE_PLUGIN_ROOT:-$DIR}/bin"
 
 input=$(cat)
 sid=$(printf '%s' "$input" | jq -r '.session_id // ""' 2>/dev/null || true)
@@ -52,7 +56,7 @@ touch "$LANE/last-active"
 # falls inside the (possibly reconstructed) timer window. Heal output is
 # intentionally discarded — the next UserPromptSubmit surfaces the heal
 # signal in the [turn-ts] marker.
-"$DIR/bin/heal-timer.sh" "$sid" >/dev/null 2>&1 || true
+"$BIN_DIR/heal-timer.sh" "$sid" >/dev/null 2>&1 || true
 
 if [ -f "$LANE/skip-ai-end" ]; then
   rm -f "$LANE/skip-ai-end"
@@ -185,7 +189,7 @@ else
   warn_line=""
   if [ -f "$LANE/timer-start" ] && [ -f "$TURN_LOG" ]; then
     split_err=$(mktemp)
-    split=$("$DIR/bin/worklog-split.sh" "$sid" 2>"$split_err" || true)
+    split=$("$BIN_DIR/worklog-split.sh" "$sid" 2>"$split_err" || true)
     warns=$(cat "$split_err")
     rm -f "$split_err"
     if [ -n "$split" ]; then
@@ -210,4 +214,4 @@ fi
 # pile up until a NEW session starts AND its sweep runs. Sweep is cheap (a
 # handful of stat calls) and explicitly protects the current lane via
 # CLAUDE_SWEEP_SKIP_SID, so this is safe to run unconditionally.
-CLAUDE_SWEEP_SKIP_SID="$sid" "$DIR/bin/sweep-stale-lanes.sh" >/dev/null 2>&1 || true
+CLAUDE_SWEEP_SKIP_SID="$sid" "$BIN_DIR/sweep-stale-lanes.sh" >/dev/null 2>&1 || true

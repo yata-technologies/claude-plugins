@@ -24,6 +24,10 @@
 set -euo pipefail
 
 DIR="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}/.claude"
+# State ($DIR/sessions) stays anchored to the consumer repo; sibling scripts
+# resolve from the plugin install dir under the plugin edition (COY-342),
+# falling back to $DIR/bin for the legacy copy-edition layout.
+BIN_DIR="${CLAUDE_PLUGIN_ROOT:-$DIR}/bin"
 TOL=60
 
 input=$(cat)
@@ -51,7 +55,7 @@ fi
 [ -f "$LANE/timer-start" ] || exit 0
 [ -f "$LANE/turn-log" ]   || exit 0
 
-split_out=$("$DIR/bin/worklog-split.sh" "$sid" 2>/dev/null) || exit 0
+split_out=$("$BIN_DIR/worklog-split.sh" "$sid" 2>/dev/null) || exit 0
 IFS=$'\t' read -r exp_total exp_ai exp_human _ai_fmt _human_fmt <<< "$split_out"
 
 seconds=$(printf '%s' "$input" | jq -r '.tool_input.seconds // empty')
