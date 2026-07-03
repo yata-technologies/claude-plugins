@@ -1,0 +1,7 @@
+# OS / editor cruft
+.DS_Store
+*.swp
+
+# nothing runtime here — this repo is the plugin SOURCE, not a consumer.
+# Consumer-side runtime state (.claude/sessions/, settings.local.json) lives in
+# consumer repos, not here.

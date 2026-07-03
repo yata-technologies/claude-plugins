@@ -1,0 +1,10 @@
+# Coyote Tracker — per-consumer config (commit this file; it is team-shared).
+# Read at runtime by the Tracker hooks from ${CLAUDE_PROJECT_DIR}/.claude/coyote-tracker.config.
+# The plugin ships the DEFAULT; this file lets a consumer override without editing plugin source.
+
+# Worklog backend: the tool name the pre/post-worklog hooks validate against.
+# Default backend is Coyote MCP. Change for another backend (e.g. mcp__redmine__create_time_entry).
+backend_tool=mcp__coyote__coyote_create_worklog
+
+# Optional pointer to this project's worklog-config doc (category/phase/activity IDs).
+worklog_config_doc=docs/REPLACE-WITH-DATED-DOC.md
