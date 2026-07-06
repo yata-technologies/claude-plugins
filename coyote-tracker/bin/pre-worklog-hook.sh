@@ -30,9 +30,24 @@ DIR="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}/
 BIN_DIR="${CLAUDE_PLUGIN_ROOT:-$DIR}/bin"
 TOL=60
 
+# Worklog backend is configurable (COY-342 / COY-T480). The hook matcher is now
+# broad (mcp__.*), so this script self-filters to the configured backend tool.
+# Default is Coyote MCP; a consumer can point at another worklog backend via
+# backend_tool in ${CLAUDE_PROJECT_DIR}/.claude/coyote-tracker.config.
+# NOTE: only the tool-name gate is swapped here — the split/start_time
+# validation below still reads Coyote MCP tool_input field names
+# (seconds/time_ai_seconds/time_human_seconds/start_time). A non-Coyote backend
+# with different param names needs a field-mapping layer (out of scope for T480).
+CONFIG="$DIR/coyote-tracker.config"
+backend_tool="mcp__coyote__coyote_create_worklog"
+if [ -f "$CONFIG" ]; then
+  cfg_val=$(sed -nE 's/^[[:space:]]*backend_tool[[:space:]]*=[[:space:]]*([^[:space:]#]+).*/\1/p' "$CONFIG" | tail -1)
+  [ -n "$cfg_val" ] && backend_tool="$cfg_val"
+fi
+
 input=$(cat)
 tool=$(printf '%s' "$input" | jq -r '.tool_name // ""')
-[ "$tool" = "mcp__coyote__coyote_create_worklog" ] || exit 0
+[ "$tool" = "$backend_tool" ] || exit 0
 
 sid=$(printf '%s' "$input" | jq -r '.session_id // ""' 2>/dev/null || true)
 if [ -z "$sid" ]; then

@@ -23,7 +23,7 @@
     ],
     "PreToolUse": [
       {
-        "matcher": "mcp__coyote__coyote_create_worklog",
+        "matcher": "mcp__.*",
         "hooks": [
           {
             "type": "command",
@@ -34,7 +34,7 @@
     ],
     "PostToolUse": [
       {
-        "matcher": "mcp__coyote__coyote_(create_task|create_worklog|update_task|update_issue)",
+        "matcher": "mcp__.*",
         "hooks": [
           {
             "type": "command",

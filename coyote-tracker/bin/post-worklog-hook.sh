@@ -30,6 +30,17 @@ set -uo pipefail
 
 DIR="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}/.claude"
 
+# Worklog backend is configurable (COY-342 / COY-T480). The hook matcher is now
+# broad (mcp__.*); this script self-filters. The worklog-recorded marker fires
+# for the configured backend_tool, while the task/issue lifecycle markers stay
+# bound to the Coyote MCP tools that drive the close-out gate.
+CONFIG="$DIR/coyote-tracker.config"
+backend_tool="mcp__coyote__coyote_create_worklog"
+if [ -f "$CONFIG" ]; then
+  cfg_val=$(sed -nE 's/^[[:space:]]*backend_tool[[:space:]]*=[[:space:]]*([^[:space:]#]+).*/\1/p' "$CONFIG" | tail -1)
+  [ -n "$cfg_val" ] && backend_tool="$cfg_val"
+fi
+
 input=$(cat)
 tool=$(printf '%s' "$input" | jq -r '.tool_name // ""')
 
@@ -42,15 +53,19 @@ LANE="$DIR/sessions/$sid"
 now=$(date +%s)
 ts=$(date +%H:%M:%S)
 
+# Worklog-recorded marker fires for the configured backend (default Coyote MCP).
+if [ "$tool" = "$backend_tool" ]; then
+  task_slug=$(printf '%s' "$input" | jq -r '.tool_input.task_slug // ""')
+  printf '%s %s %s\n' "$now" "$ts" "$task_slug" > "$LANE/worklog-recorded"
+  # COY-183: also append the slug to worklogs-this-session so the Stop
+  # hook close-out gate can diff against tasks-closed-this-session. Skip
+  # when task_slug is empty (defensive — the MCP server requires it).
+  [ -n "$task_slug" ] && printf '%s\n' "$task_slug" >> "$LANE/worklogs-this-session"
+fi
+
+# Task/issue lifecycle markers stay bound to Coyote MCP (they drive the
+# COY-183 close-out gate, which is Coyote-specific regardless of backend).
 case "$tool" in
-  mcp__coyote__coyote_create_worklog)
-    task_slug=$(printf '%s' "$input" | jq -r '.tool_input.task_slug // ""')
-    printf '%s %s %s\n' "$now" "$ts" "$task_slug" > "$LANE/worklog-recorded"
-    # COY-183: also append the slug to worklogs-this-session so the Stop
-    # hook close-out gate can diff against tasks-closed-this-session. Skip
-    # when task_slug is empty (defensive — the MCP server requires it).
-    [ -n "$task_slug" ] && printf '%s\n' "$task_slug" >> "$LANE/worklogs-this-session"
-    ;;
   mcp__coyote__coyote_create_task)
     # The new task's slug is generated server-side; pull it from the MCP
     # response. tool_response can be either a string (rare) or an object

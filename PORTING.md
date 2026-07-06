@@ -1,8 +1,8 @@
 # Coyote Tracker — plugin port status (COY-342)
 
 This repo is a **prep skeleton**. Structure, manifests, hook registrations, the script
-port (§1), and the operating-rules skill (§5) are done. Still **not enable-ready** until
-the backend-config refactor (§2), the consumer-wiring scaffolding (§3/§4), and the
+port (§1), the operating-rules skill (§5), and the backend-config refactor (§2) are done.
+Still **not enable-ready** until the consumer-wiring scaffolding (§3/§4) and the
 plugin-mode smoke tests (§6) land.
 
 ## Done
@@ -19,16 +19,18 @@ plugin-mode smoke tests (§6) land.
       copy-mode. `bash -n` clean on all scripts.
 - [x] **§5 — skill filled.** `skills/coyote-worklog/SKILL.md` is a focused, plugin-aware
       ruleset; full canonical text bundled as `reference.md` (from `CLAUDE-COYOTE-HUMAN.md`).
+- [x] **§2 — backend configurable (COY-T480).** `hooks/hooks.json` Pre/PostToolUse matchers
+      broadened to `mcp__.*`; `pre-worklog-hook.sh` / `post-worklog-hook.sh` now read
+      `backend_tool` from `${CLAUDE_PROJECT_DIR}/.claude/coyote-tracker.config` (default
+      `mcp__coyote__coyote_create_worklog`) and self-filter — pre-hook validates only the
+      configured backend; post-hook drops `worklog-recorded` for the backend while keeping
+      the Coyote task/issue lifecycle markers (COY-183 close-out gate) bound to Coyote MCP.
+      **Known limitation:** only the tool-name gate is configurable — the pre-hook's split /
+      start_time validation still reads Coyote MCP `tool_input` field names
+      (`seconds`/`time_ai_seconds`/`time_human_seconds`/`start_time`). A non-Coyote backend
+      with different param names needs a field-mapping layer (separate follow-up).
 
 ## Pending — MUST do before enabling
-
-### 2. Make the PreToolUse/PostToolUse backend configurable
-`hooks/hooks.json` hardcodes matcher `mcp__coyote__coyote_create_worklog` (plugin
-hooks.json is static; plugin `settings.json` can't parameterize it — supports only
-`agent`/`subagentStatusLine`). Plan: broaden the matcher (e.g. `mcp__.*`) and have
-`pre-worklog-hook.sh` / `post-worklog-hook.sh` read `backend_tool` from
-`${CLAUDE_PROJECT_DIR}/.claude/coyote-tracker.config` and early-exit when the fired tool
-name != `backend_tool`.
 
 ### 3. Statusline delivery — RESOLVED: needs consumer wiring (cannot be bundled)
 Confirmed against Claude Code docs: a plugin **cannot** provide the main `statusLine`
