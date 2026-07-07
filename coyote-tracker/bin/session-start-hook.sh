@@ -4,8 +4,10 @@
 # Reads session_id and source from the hook JSON. Resolves
 #   LANE = .claude/sessions/<session_id>/
 # and operates on that lane only:
-#   - source = startup | clear: fresh window — write timer-start, truncate turn-log,
-#     clear skip-ai-end, sweep stale lanes (mtime > 24h on last-active).
+#   - source = startup | clear: clear skip-ai-end, sweep stale lanes (mtime > 24h
+#     on last-active). `clear` always mints a fresh window; `startup` mints one
+#     ONLY when no timer-start exists — an existing window is preserved regardless
+#     of idle age (long idle gaps are handled by auto-away in worklog-split.sh).
 #   - source = resume: preserve lane state (the conversation is continuing). If the
 #     lane was swept while idle, fall back to a fresh window so the session is usable.
 #
@@ -48,11 +50,6 @@ if [ ! -f "$SENTINEL" ]; then
   fi
 fi
 
-# Freshness window for the startup re-fire guard below. A lane whose last-active
-# is newer than this is treated as "live". Mirrors the stale-lane sweep
-# threshold so "would survive a sweep" ⇔ "preserved on a startup re-fire".
-FRESH_MIN="${CLAUDE_SWEEP_THRESHOLD_MIN:-180}"
-
 case "$src" in
   clear)
     # Explicit user reset (/clear) — always a fresh window.
@@ -66,13 +63,16 @@ case "$src" in
     # client reconnect, or a re-attach while running concurrent sessions. The
     # previous code unconditionally reset timer-start and truncated turn-log
     # here, silently discarding an ACTIVE session's in-progress tracking (a
-    # session running continuous turns lost ~80 min when startup re-fired).
-    # Only mint a fresh window when there is no live lane; otherwise preserve
-    # what is already running. A genuinely new conversation always carries a new
-    # session_id (empty lane), so it still takes the fresh-window path below.
-    if [ -f "$LANE/timer-start" ] && \
-       [ -n "$(find "$LANE/last-active" -maxdepth 0 -mmin "-$FRESH_MIN" 2>/dev/null)" ]; then
-      echo 'Coyote Tracker: live timer preserved (startup re-fired on an active session — not reset). Continue as normal; the existing tracking window stands.'
+    # session running continuous turns lost ~80 min when startup re-fired). An
+    # intermediate fix preserved only lanes active within FRESH_MIN — but that
+    # still nuked the window of a session that had gone quiet (user stepped away
+    # without `aw`), which is exactly the case we must NOT discard. So: preserve
+    # ANY existing timer-start regardless of idle age. Long idle gaps are handled
+    # correctly by auto-away in worklog-split.sh, not by resetting the window. A
+    # genuinely new conversation carries a new session_id (empty lane), so it
+    # still takes the fresh-window path below.
+    if [ -f "$LANE/timer-start" ]; then
+      echo 'Coyote Tracker: timer preserved (startup re-fired on an existing session — not reset). Continue as normal; the existing tracking window stands.'
     else
       date +%s > "$LANE/timer-start"
       : > "$LANE/turn-log"
