@@ -80,8 +80,9 @@ fi
 # Canonical split at call time. Fail open — never block a worklog if the split
 # script hiccups.
 split_out=$("$BIN_DIR/worklog-split.sh" "$sid" 2>/dev/null) || exit 0
-IFS=$'\t' read -r exp_total exp_ai exp_human _ai_fmt _human_fmt <<< "$split_out"
+IFS=$'\t' read -r exp_total exp_ai exp_human _ai_fmt _human_fmt exp_auto <<< "$split_out"
 [ -n "${exp_ai:-}" ] && [ -n "${exp_human:-}" ] || exit 0
+exp_auto="${exp_auto:-0}"
 
 # seconds is set to the split's own sum so the injected triple is always
 # internally consistent (ai + human == seconds), regardless of the rare
@@ -107,8 +108,10 @@ out=$(printf '%s' "$input" | jq -c \
   --argjson hu "$exp_human" \
   --arg st "$canon_start" \
   --arg total "$exp_total" \
+  --argjson auto "$exp_auto" \
   --arg sidshort "$sid_short" \
-  '.tool_input as $ti | {
+  '.tool_input as $ti |
+   (if $auto > 0 then " ⚠️ Auto-away: \($auto)s of idle time was reclassified out of Human by the idle cap — the timer was preserved (no /clear, and no /bk since no /aw was ever opened). Tell the human plainly that this idle stretch was excluded from Human time; if it was actually working time, they can re-log with an explicit worklog-split-override." else "" end) as $autonote | {
      hookSpecificOutput: {
        hookEventName: "PreToolUse",
        permissionDecision: "allow",
@@ -118,7 +121,7 @@ out=$(printf '%s' "$input" | jq -c \
          time_human_seconds: $hu,
          start_time: $st
        }),
-       additionalContext: ("Coyote Tracker (\($sidshort)): canonical split injected by pre-worklog-hook — seconds=\($sec), time_ai_seconds=\($ai), time_human_seconds=\($hu), start_time=\($st) (raw window total=\($total)s). Report THESE figures to the human in your closing message. Do NOT run worklog-split.sh — the hook is the source of truth for this session'"'"'s lane.")
+       additionalContext: ("Coyote Tracker (\($sidshort)): canonical split injected by pre-worklog-hook — seconds=\($sec), time_ai_seconds=\($ai), time_human_seconds=\($hu), start_time=\($st) (raw window total=\($total)s). Report THESE figures to the human in your closing message. Do NOT run worklog-split.sh — the hook is the source of truth for this session'"'"'s lane.\($autonote)")
      }
    }' 2>/dev/null) || exit 0
 

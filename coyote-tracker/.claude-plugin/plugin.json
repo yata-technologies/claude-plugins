@@ -1,6 +1,6 @@
 {
   "name": "coyote-tracker",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Coyote Tracker — captures Human/AI turn boundaries, auto-starts a per-session timer, computes worklog splits, and writes worklogs via a configurable backend (default: Coyote MCP).",
   "author": {
     "name": "Yata Technologies",

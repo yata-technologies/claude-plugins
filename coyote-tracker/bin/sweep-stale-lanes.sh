@@ -6,13 +6,17 @@
 # session-start-hook.sh on every SessionStart source and from the Stop hook;
 # idempotent and quiet on no-op.
 #
-# Idle threshold: 3h (180 min). Sessions are typically opened and closed
-# multiple times per day; without sweeping intraday, lanes pile up because the
-# `🛑 Session closed.` marker is the only deterministic cleanup signal and is
-# easily forgotten. False-positive sweep of a long-idle session is benign: the
-# `resume` branch in session-start-hook.sh mints a fresh window with a notice
-# when the lane is gone. (Idle work without `aw`/`bk` away markers would have
-# given wrong AI/Human splits anyway, so a fresh window is the safer state.)
+# Idle threshold: 24h (1440 min). This is a HYGIENE sweep for genuinely
+# abandoned lanes (terminal closed, OOM, `🛑 Session closed.` forgotten) — NOT a
+# split-correctness tool. An earlier revision dropped this to 3h to curb
+# intraday pile-up, but that swept live sessions that had merely gone quiet
+# (user stepped away without `aw`), forcing a mid-session `/clear` to recover —
+# the opposite of safe. Correctness of a long idle gap is now handled by
+# auto-away in worklog-split.sh (the excess over the idle cap is reclassified as
+# away), so there is no longer any reason to delete an idle-but-alive lane. Keep
+# the threshold generous: a full working day's worth of intraday sessions is a
+# handful of tiny dirs, and they are swept the next day. Configurable via
+# CLAUDE_SWEEP_THRESHOLD_MIN.
 #
 # An active lane in the current session is protected even if its own mtime is
 # old, by passing CLAUDE_SWEEP_SKIP_SID — the active session-start hook touches
@@ -24,7 +28,7 @@ DIR="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}/
 SESSIONS="$DIR/sessions"
 [ -d "$SESSIONS" ] || exit 0
 
-THRESHOLD_MIN="${CLAUDE_SWEEP_THRESHOLD_MIN:-180}"
+THRESHOLD_MIN="${CLAUDE_SWEEP_THRESHOLD_MIN:-1440}"
 SKIP_SID="${CLAUDE_SWEEP_SKIP_SID:-}"
 
 shopt -s nullglob
