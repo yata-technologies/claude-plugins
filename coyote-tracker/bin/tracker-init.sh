@@ -4,7 +4,7 @@
 # Scaffolds the per-consumer files that the plugin CANNOT auto-install (they must live
 # in the consumer repo, not the plugin cache) into ${CLAUDE_PROJECT_DIR}:
 #   1. .claude/coyote-tracker.config           — backend + defaults          (team-shared, commit)
-#   2. docs/<today>-<key>-worklog-config.md    — category/phase/activity IDs  (team-shared, commit)
+#   2. docs/<key>-worklog-config.md            — category/phase/activity IDs  (team-shared, commit)
 #   3. .claude/bin/<name>.sh wrappers          — thin bridges to plugin scripts (team-shared, commit)
 #   4. .claude/settings.local.json             — statusLine + allow-list       (user-local, git-ignored)
 #
@@ -38,14 +38,13 @@ if [ ! -f "$cfg" ]; then
   created+=("$cfg")
 fi
 
-# 2. per-project worklog-config doc (dated, keyed by project). Key is best-effort from
+# 2. per-project worklog-config doc (keyed by project). Key is best-effort from
 #    the repo dir name; the engineer renames/fills as needed. Skip if the repo already
-#    carries ANY *worklog-config.md (any date/key) — a teammate's clone already has the
-#    committed doc, and matching only the exact dated name would scaffold a duplicate.
+#    carries ANY *worklog-config.md (any key) — a teammate's clone already has the
+#    committed doc, and matching only the exact keyed name would scaffold a duplicate.
 if ! compgen -G "$PROJECT_DIR/docs/*worklog-config.md" >/dev/null; then
   key=$(basename "$PROJECT_DIR" | tr '[:lower:]' '[:upper:]')
-  today=$(date +%Y%m%d)
-  doc="$PROJECT_DIR/docs/${today}-${key}-worklog-config.md"
+  doc="$PROJECT_DIR/docs/${key}-worklog-config.md"
   mkdir -p "$PROJECT_DIR/docs"
   cp "$TEMPLATES/worklog-config.template.md" "$doc"
   created+=("$doc")

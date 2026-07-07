@@ -16,7 +16,7 @@ guide the user through filling them in.
 2. The script writes, into the consumer repo (`${CLAUDE_PROJECT_DIR}`), only what is
    missing (existing files are never overwritten; `settings.local.json` is merged):
    - `.claude/coyote-tracker.config` — backend + phase/activity defaults *(commit)*
-   - `docs/<today>-<project-key>-worklog-config.md` — category/phase/activity IDs *(commit)*
+   - `docs/<project-key>-worklog-config.md` — category/phase/activity IDs *(commit)*
    - `.claude/bin/*.sh` — thin wrappers that delegate to the plugin's real scripts
      (statusline, away, worklog-split, carry-over-ack, timer-stop) *(commit)*
    - `.claude/settings.local.json` — `statusLine` + the `Bash(.claude/bin/*.sh:*)`
