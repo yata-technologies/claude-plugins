@@ -18,7 +18,11 @@
 #      absent, BLOCK the close — leave the lane in place, emit a loud
 #      gating reminder, and let the next turn re-emit the marker after
 #      either proposing the closes or writing a carry-over-ack. Otherwise
-#      rm -rf the entire lane directory atomically.
+#      rm -rf the entire lane directory atomically. When the close proceeds,
+#      also surface a SOFT, non-blocking issue-level nudge (COY-390) if
+#      task(s) were closed this session but no issue was — the recurring
+#      "parent issue left open" audit gap. Nudge, not gate: issue scope is
+#      fuzzy, so a hard block would false-positive and erode the task gate.
 #   3. Without the close marker, inject the canonical split into the
 #      end-of-turn reminder so the model has fresh, mechanical numbers
 #      when proposing a worklog offer.
@@ -132,6 +136,34 @@ if [ "$closed" = "1" ]; then
   if [ -f "$LANE/carry-over-ack" ]; then
     ack_reason=$(head -1 "$LANE/carry-over-ack" 2>/dev/null | sed -E 's/^[0-9]+ [0-9:]+ //' || true)
   fi
+
+  # COY-390: issue-level close-out nudge (SOFT — never blocks). The gate
+  # above is task-level only; the recurring audit failure is one level up —
+  # the parent issue left open after its work shipped (COY-387: task
+  # COY-T506 closed + shipped, issue COY-387 left `not_started`). A HARD
+  # issue gate is deliberately rejected here: "issue scope wrapped" is fuzzy
+  # (multi-task issues, investigation issues with follow-ups legitimately
+  # stay open), so a hard block would false-positive and train reflexive
+  # carry-over-ack bypass — eroding the task gate too. Instead we fire a
+  # single non-blocking reminder on the dominant, high-precision, fully
+  # network-free signal: task(s) were closed this session but NO issue was.
+  # That is exactly the COY-387 shape, and firing once (not per-task) keeps
+  # it low-noise on legitimately-open multi-task issues. Read the lane files
+  # BEFORE the rm -rf below. Precise per-issue detection ("all child tasks
+  # complete") would need a Coyote API query the hooks can't make without
+  # wiring a token into the hook env — recorded as a future upgrade, not
+  # worth the new dependency/security surface for a nudge.
+  issue_nudge_line=""
+  tasks_closed_n=0
+  [ -f "$LANE/tasks-closed-this-session" ] && \
+    tasks_closed_n=$(grep -c '[^[:space:]]' "$LANE/tasks-closed-this-session" 2>/dev/null || true)
+  issues_closed_n=0
+  [ -f "$LANE/issues-closed-this-session" ] && \
+    issues_closed_n=$(grep -c '[^[:space:]]' "$LANE/issues-closed-this-session" 2>/dev/null || true)
+  if [ "${tasks_closed_n:-0}" -gt 0 ] && [ "${issues_closed_n:-0}" -eq 0 ]; then
+    issue_nudge_line=$(printf ' ⚠️ ISSUE CLOSE-OUT NUDGE (COY-390): you closed %s task(s) this session but did NOT close any issue. If any of those tasks wrapped its parent issue'\''s full scope — the recurring audit gap, e.g. COY-387 left open after COY-T506 shipped — that parent issue should be `complete` too. In your closing message, EITHER propose closing the parent issue(s) via `coyote_update_issue`, OR state explicitly that each parent has remaining work / a deferral and is intentionally staying open. Soft nudge, not a block — the lane is already removed, so act on it in THIS response.' "$tasks_closed_n")
+  fi
+
   rm -rf "$LANE"
 
   ack_line=""
@@ -144,7 +176,7 @@ if [ "$closed" = "1" ]; then
   # startup → new lane + new timer) or /exit + reopen. Without this, the
   # next chunk of work lands in no bucket. Make this loud so Claude relays
   # it forcefully to the human in the closing message.
-  printf '[ai-end %s] 🛑 Session-close marker detected — lane %s removed.%s ⚠️ THIS SESSION IS NOW UNTRACKED. Before any further work in this terminal, the user MUST run `/clear` (preferred — keeps the terminal, mints a fresh tracked session) OR `/exit` then reopen. Continuing in this session without /clear or /exit leaves all subsequent work outside any timer window — no AI/Human split, no worklog basis. Include this instruction explicitly and prominently in your closing message to the human.' "$ts" "$sid_short" "$ack_line"
+  printf '[ai-end %s] 🛑 Session-close marker detected — lane %s removed.%s%s ⚠️ THIS SESSION IS NOW UNTRACKED. Before any further work in this terminal, the user MUST run `/clear` (preferred — keeps the terminal, mints a fresh tracked session) OR `/exit` then reopen. Continuing in this session without /clear or /exit leaves all subsequent work outside any timer window — no AI/Human split, no worklog basis. Include this instruction explicitly and prominently in your closing message to the human.' "$ts" "$sid_short" "$ack_line" "$issue_nudge_line"
 else
   # COY-180: if a task was just created this turn (PostToolUse hook dropped
   # LANE/task-just-created), nudge the agent to flip it to in_progress
