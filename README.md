@@ -14,9 +14,9 @@ In a consumer repo, commit `.claude/settings.json`:
 ```json
 {
   "extraKnownMarketplaces": {
-    "yata": { "source": "github", "repo": "Yata-Technologies/claude-plugins" }
+    "yatatechnologies": { "source": "github", "repo": "Yata-Technologies/claude-plugins" }
   },
-  "enabledPlugins": ["coyote-tracker@yata"]
+  "enabledPlugins": ["coyote-tracker@yatatechnologies"]
 }
 ```
 
