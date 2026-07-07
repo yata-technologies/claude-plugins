@@ -33,6 +33,21 @@ LANE="$DIR/sessions/$sid"
 mkdir -p "$LANE"
 rm -f "$LANE/skip-ai-end"
 
+# One-time consumer scaffolding (COY-T481). A plugin cannot ship a statusLine or a
+# permissions.allow entry, so the first time this repo sees the plugin we scaffold the
+# thin .claude/bin wrappers + settings.local.json (statusLine + allow-list) via
+# tracker-init. Sentinel-gated: a single file test on every subsequent session, so it
+# adds no startup cost once done. Never blocks SessionStart (|| true; hooks must not
+# fail the session). Manual /coyote-tracker:init stays as the repair/re-run path.
+SENTINEL="$DIR/.coyote-tracker-initialized"
+if [ ! -f "$SENTINEL" ]; then
+  init_out=$("$BIN_DIR/tracker-init.sh" 2>&1) || true
+  : > "$SENTINEL"
+  if [ -n "$init_out" ]; then
+    printf 'Coyote Tracker — first-time setup for this repo:\n%s\n\n' "$init_out"
+  fi
+fi
+
 # Freshness window for the startup re-fire guard below. A lane whose last-active
 # is newer than this is treated as "live". Mirrors the stale-lane sweep
 # threshold so "would survive a sweep" ⇔ "preserved on a startup re-fire".
