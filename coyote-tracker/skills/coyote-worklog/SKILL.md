@@ -54,7 +54,7 @@ BEFORE stopping the timer** — stopping removes the lane and destroys the canon
 ## Phase and activity — always set
 
 Never leave phase/activity blank on a task or worklog. Pull the project's IDs from its
-`docs/<date>-<key>-worklog-config.md` (scaffolded by `/coyote-tracker:init`); if absent,
+`docs/<key>-worklog-config.md` (scaffolded by `/coyote-tracker:init`); if absent,
 use `coyote_list_phases` / `coyote_list_activities`.
 
 ## Closing the session

@@ -317,7 +317,7 @@ Phase and activity must be set on **every task and worklog** — never leave the
 
 - **Task creation:** Set the appropriate phase (e.g., コーディング, テスト, ドキュメント) and activity_ids (e.g., 機能開発, バグ修正, ドキュメント).
 - **Worklog creation:** Set the appropriate `activity_id` matching the type of work performed.
-- Refer to the project-specific worklog config doc (`docs/<date>-<project-key>-worklog-config.md`) for available phase IDs, activity IDs, and selection guidelines.
+- Refer to the project-specific worklog config doc (`docs/<project-key>-worklog-config.md`) for available phase IDs, activity IDs, and selection guidelines.
 - If the project config is not available, use `coyote_list_phases` and `coyote_list_activities` to find available options.
 
 ### 5. Proactively Offer to Log — and to Close (Bundled, Not Sequential)
