@@ -30,11 +30,26 @@ ALLOW_SCRIPTS=(away.sh worklog-split.sh carry-over-ack.sh timer-stop.sh)
 created=()
 merged=()
 
+# Resolve the worklog-config doc this consumer should point at, BEFORE writing the
+# config (step 1) so its worklog_config_doc= lands on the real doc, not the template
+# placeholder. Prefer an existing committed doc (a teammate's clone already carries
+# one, any key); otherwise a fresh key-derived name from the repo dir.
+existing_doc=$(compgen -G "$PROJECT_DIR/docs/*worklog-config.md" | head -n1 || true)
+if [ -n "$existing_doc" ]; then
+  doc="$existing_doc"
+else
+  key=$(basename "$PROJECT_DIR" | tr '[:lower:]' '[:upper:]')
+  doc="$PROJECT_DIR/docs/${key}-worklog-config.md"
+fi
+doc_rel="${doc#"$PROJECT_DIR"/}"
+
 # 1. backend + defaults config
 cfg="$PROJECT_DIR/.claude/coyote-tracker.config"
 if [ ! -f "$cfg" ]; then
   mkdir -p "$PROJECT_DIR/.claude"
   cp "$TEMPLATES/coyote-tracker.config.example" "$cfg"
+  # Point worklog_config_doc at the actual doc rather than the template placeholder.
+  sed -i "s|^worklog_config_doc=.*|worklog_config_doc=${doc_rel}|" "$cfg"
   created+=("$cfg")
 fi
 
@@ -42,9 +57,7 @@ fi
 #    the repo dir name; the engineer renames/fills as needed. Skip if the repo already
 #    carries ANY *worklog-config.md (any key) — a teammate's clone already has the
 #    committed doc, and matching only the exact keyed name would scaffold a duplicate.
-if ! compgen -G "$PROJECT_DIR/docs/*worklog-config.md" >/dev/null; then
-  key=$(basename "$PROJECT_DIR" | tr '[:lower:]' '[:upper:]')
-  doc="$PROJECT_DIR/docs/${key}-worklog-config.md"
+if [ ! -e "$doc" ]; then
   mkdir -p "$PROJECT_DIR/docs"
   cp "$TEMPLATES/worklog-config.template.md" "$doc"
   created+=("$doc")
@@ -87,15 +100,16 @@ else
   echo "coyote-tracker: install jq, then re-run /coyote-tracker:init." >&2
 fi
 
-# 5. Keep the user-local artifacts git-ignored so they stay per-clone. This matters
-#    most for the sentinel: if it were committed, a teammate cloning the repo would
-#    skip their own first-session setup and never get their (git-ignored)
-#    settings.local.json — so no statusLine / allow-list for them. A directory-local
+# 5. Keep the per-clone / ephemeral artifacts git-ignored. This matters most for the
+#    sentinel: if it were committed, a teammate cloning the repo would skip their own
+#    first-session setup and never get their (git-ignored) settings.local.json — so no
+#    statusLine / allow-list for them. sessions/ holds per-session timer state that is
+#    regenerated every run and must never reach the remote. A directory-local
 #    .claude/.gitignore keeps this self-contained (no repo-root .gitignore edit).
 ignore="$PROJECT_DIR/.claude/.gitignore"
 ignore_existed=1; [ -f "$ignore" ] || ignore_existed=0
 ignore_touched=0
-for line in "settings.local.json" ".coyote-tracker-initialized"; do
+for line in "settings.local.json" ".coyote-tracker-initialized" "sessions/"; do
   if [ ! -f "$ignore" ] || ! grep -qxF "$line" "$ignore"; then
     mkdir -p "$PROJECT_DIR/.claude"
     printf '%s\n' "$line" >> "$ignore"
