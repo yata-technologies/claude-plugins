@@ -1,9 +1,9 @@
 # Coyote Tracker — plugin port status (COY-342)
 
 This repo is a **prep skeleton**. Structure, manifests, hook registrations, the script
-port (§1), the operating-rules skill (§5), and the backend-config refactor (§2) are done.
-Still **not enable-ready** until the consumer-wiring scaffolding (§3/§4) and the
-plugin-mode smoke tests (§6) land.
+port (§1), the operating-rules skill (§5), the backend-config refactor (§2), and the
+consumer-wiring scaffolding (§3/§4, auto-run on first session) are done. Still **not
+enable-ready** until the plugin-mode smoke tests (§6) land against a real install.
 
 ## Done
 
@@ -29,37 +29,46 @@ plugin-mode smoke tests (§6) land.
       start_time validation still reads Coyote MCP `tool_input` field names
       (`seconds`/`time_ai_seconds`/`time_human_seconds`/`start_time`). A non-Coyote backend
       with different param names needs a field-mapping layer (separate follow-up).
+- [x] **§3/§4 — consumer wiring scaffolded + auto-run (COY-T481).** `tracker-init.sh` writes
+      thin `.claude/bin/*.sh` wrappers (runtime cache-path resolver), jq-merges `statusLine` +
+      allow-list into `.claude/settings.local.json`, and git-ignores the local artifacts.
+      Auto-runs once from `session-start-hook.sh` (sentinel-gated); `/coyote-tracker:init`
+      is the manual re-run/repair path. Version bumped `0.1.0` → `0.2.0`.
 
 ## Pending — MUST do before enabling
 
-### 3. Statusline delivery — RESOLVED: needs consumer wiring (cannot be bundled)
-Confirmed against Claude Code docs: a plugin **cannot** provide the main `statusLine`
-(plugin `settings.json` supports only `agent`/`subagentStatusLine`), and
-`${CLAUDE_PLUGIN_ROOT}` is **not** substituted inside a consumer's own `settings.json`.
-So the consumer must set `statusLine` themselves, pointing at a **stable** path — the
-plugin cache path shifts on update, so don't hardcode it. Recommended pattern:
-- consumer commits `"statusLine": { "type": "command", "command": "${CLAUDE_PROJECT_DIR}/.claude/bin/statusline.sh" }`
-- `.claude/bin/statusline.sh` is a **thin wrapper** that delegates to the plugin script.
-`tracker-init.sh` should scaffold this wrapper. **Open sub-problem:** the wrapper still
-needs a stable way to locate the plugin's `statusline.sh` (cache path moves on update) —
-decide on a resolver (e.g. `~/.claude/plugins/…` glob, or a documented symlink).
+### 3 + 4. Statusline + allow-list consumer wiring — DONE (COY-T481)
+A plugin **cannot** provide the main `statusLine` (plugin `settings.json` supports only
+`agent`/`subagentStatusLine`) nor a `permissions.allow` block, and `${CLAUDE_PLUGIN_ROOT}`
+is **not** substituted inside a consumer's own settings. Plugin-bundled scripts are also
+**not** auto-trusted — a model-invoked Bash call to one still prompts. So the consumer
+needs thin wrappers at a stable path + a `statusLine` line + allow-list lines.
 
-### 4. Permission allow-list — RESOLVED: needs consumer wiring (cannot be bundled)
-Confirmed: plugin `settings.json` has **no** `permissions` block, and plugin-bundled
-scripts are **not** auto-trusted — a model-invoked Bash call to a plugin script still
-prompts. The model-invoked scripts are `away.sh` (via `/aw` `/bk`), `worklog-split.sh`,
-`carry-over-ack.sh`, `timer-stop.sh`. Same wrapper pattern as §3: consumer commits thin
-`.claude/bin/<script>.sh` wrappers + allow-lists them with stable relative paths
-(`Bash(.claude/bin/worklog-split.sh:*)`, …). This is why `SKILL.md` keeps the
-`.claude/bin/<script>.sh` invocation form — it matches the wrapper, not the plugin cache.
-`tracker-init.sh` should scaffold these wrappers + the allow-list lines.
+**Implemented:** `tracker-init.sh` now scaffolds all of it, and it **auto-runs once** from
+`session-start-hook.sh` (sentinel-gated) so onboarding needs no slash command:
+- **Wrappers** → `.claude/bin/{statusline,away,worklog-split,carry-over-ack,timer-stop}.sh`,
+  byte-identical (from `templates/bin-wrapper.sh.template`). Each picks its target from its
+  own basename and **re-resolves the moving plugin cache path at runtime**
+  (`${CLAUDE_CONFIG_DIR:-~/.claude}/plugins/marketplaces/*/coyote-tracker/bin/…`, with
+  `cache/*` fallbacks) — this settles the old open sub-problem: **runtime glob, not a baked
+  path or symlink**, so a plugin update never breaks the wrapper. Committed (team-shared).
+- **`settings.local.json`** (user-local, git-ignored) gets `statusLine` +
+  `Bash(.claude/bin/*.sh:*)` allow-list, **jq-merged** (statusLine only if absent, allow
+  entries unioned) — idempotent, never clobbers existing keys.
+- **`.claude/.gitignore`** ignores `settings.local.json` + the init sentinel. Critical:
+  the sentinel MUST stay per-clone, else a teammate's clone skips their own
+  settings.local.json setup.
 
-> **Onboarding-story correction:** §3/§4 mean the consumer install is NOT purely "one
-> settings block". It is: (a) the `extraKnownMarketplaces` + `enabledPlugins` block, plus
-> (b) a `statusLine` line + allow-list lines, plus (c) thin `.claude/bin/*.sh` wrappers —
-> all scaffoldable by `/coyote-tracker:init`, but they are real consumer-repo files, not
-> zero-touch. Hooks (SessionStart/UserPromptSubmit/Pre/Post/Stop) DO come entirely from
-> the plugin; only statusline + model-invoked scripts need the wrapper bridge.
+**Activation timing:** files a hook writes work immediately, but `statusLine` + the
+allow-list are read at session start, so they light up on the **next** session. The
+first-run notice tells the user to restart. `/coyote-tracker:init` remains as the manual
+re-run/repair path (e.g. `jq` missing on first run).
+
+> **Onboarding story (updated):** enable the plugin (`extraKnownMarketplaces` +
+> `enabledPlugins`) → first SessionStart auto-scaffolds everything → restart → fully live
+> (clock shows, allow-listed scripts run prompt-free). Hooks
+> (SessionStart/UserPromptSubmit/Pre/Post/Stop) come entirely from the plugin; only
+> statusline + model-invoked scripts need the wrapper bridge, now automatic.
 
 ### 6. Plugin-mode smoke tests
 Adapt export-procedure §4 and spec §8 to a plugin install (enable plugin → timer starts,
