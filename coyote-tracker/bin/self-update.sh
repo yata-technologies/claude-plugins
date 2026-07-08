@@ -31,6 +31,17 @@ if [ -f "$STAMP" ]; then
   [ $((now - last)) -lt "$THROTTLE" ] && exit 0
 fi
 mkdir -p "$DIR"
+
+# Make sure our per-user state files never show up as untracked in the consumer
+# repo. tracker-init ships this glob for fresh consumers, but a repo initialized
+# before the self-updater existed won't re-run init — so ensure it here too
+# (idempotent; a one-time one-line diff at most). Matches the throttle stamp + log,
+# not the committed coyote-tracker.config.
+ignore="$DIR/.gitignore"
+if [ ! -f "$ignore" ] || ! grep -qxF ".coyote-tracker-*" "$ignore" 2>/dev/null; then
+  printf '%s\n' ".coyote-tracker-*" >> "$ignore" 2>/dev/null || true
+fi
+
 printf '%s' "$now" > "$STAMP"
 
 # Detached so SessionStart returns instantly. All best-effort — never surfaces.
@@ -48,7 +59,7 @@ printf '%s' "$now" > "$STAMP"
   [ -z "$id" ] && exit 0
   [ -z "$scope" ] && scope=project
 
-  claude plugin update "$id" --scope "$scope" >>"$LOG" 2>&1 || true
+  claude plugin update "$id" --scope "$scope" >"$LOG" 2>&1 || true
 ) >/dev/null 2>&1 &
 
 exit 0

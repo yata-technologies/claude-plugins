@@ -103,13 +103,16 @@ fi
 # 5. Keep the per-clone / ephemeral artifacts git-ignored. This matters most for the
 #    sentinel: if it were committed, a teammate cloning the repo would skip their own
 #    first-session setup and never get their (git-ignored) settings.local.json — so no
-#    statusLine / allow-list for them. sessions/ holds per-session timer state that is
-#    regenerated every run and must never reach the remote. A directory-local
+#    statusLine / allow-list for them. The `.coyote-tracker-*` glob covers all per-user
+#    tracker state files (the sentinel, plus the self-updater's throttle stamp + log),
+#    which are machine-local and must never sync. It does NOT match the committed
+#    `coyote-tracker.config` (no leading dot/hyphen). sessions/ holds per-session timer
+#    state that is regenerated every run and must never reach the remote. A directory-local
 #    .claude/.gitignore keeps this self-contained (no repo-root .gitignore edit).
 ignore="$PROJECT_DIR/.claude/.gitignore"
 ignore_existed=1; [ -f "$ignore" ] || ignore_existed=0
 ignore_touched=0
-for line in "settings.local.json" ".coyote-tracker-initialized" "sessions/"; do
+for line in "settings.local.json" ".coyote-tracker-*" "sessions/"; do
   if [ ! -f "$ignore" ] || ! grep -qxF "$line" "$ignore"; then
     mkdir -p "$PROJECT_DIR/.claude"
     printf '%s\n' "$line" >> "$ignore"
