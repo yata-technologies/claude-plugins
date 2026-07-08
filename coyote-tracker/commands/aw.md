@@ -9,4 +9,4 @@ The human is stepping away. Record the start of an away interval so the break is
 
    `.claude/bin/away.sh start <sid_8>`
 
-3. Relay the script's confirmation line verbatim and wait. Do not start new work until the human sends `/bk`.
+3. Relay the script's confirmation line verbatim and wait. Do not start new work until the human sends `/:bk`.

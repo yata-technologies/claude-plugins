@@ -24,6 +24,13 @@ Then, once per repo, run `/coyote-tracker:init` to scaffold the per-consumer fil
 (`.claude/coyote-tracker.config` + `docs/<date>-<key>-worklog-config.md`) and fill in
 the project's category/phase/activity IDs.
 
+### Invoking the break commands
+
+Type **`/:aw`** (away) and **`/:bk`** (back) — the leading `/:` narrows slash autocomplete
+to exactly `/coyote-tracker:aw` / `/coyote-tracker:bk`. Do **not** type `/aw` / `/bk`:
+Claude Code's autocomplete resolves that prefix to a *different, unrelated* command, so it
+silently fires the wrong thing. There is no short-slash shorthand — use `/:aw` / `/:bk`.
+
 ## Plugin: coyote-tracker
 
 ```
@@ -33,7 +40,7 @@ coyote-tracker/
 │                                    PostToolUse / Stop — all via ${CLAUDE_PLUGIN_ROOT}/bin
 ├── bin/*.sh                       Tracker scripts (pure bash + jq + awk); ported to
 │                                    ${CLAUDE_PLUGIN_ROOT} for sibling calls (PORTING.md §1)
-├── commands/                      /aw /bk /coyote-tracker:init
+├── commands/                      /coyote-tracker:aw|bk (invoke via /:aw /:bk), /coyote-tracker:init
 ├── skills/coyote-worklog/         operating rules (replaces the CLAUDE.md-referenced
 │                                    doc + auto-memory template): SKILL.md + reference.md
 └── templates/                     seeds copied into the consumer repo by tracker-init.sh
