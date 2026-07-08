@@ -45,10 +45,12 @@ verbatim. The PreToolUse hook rejects a `coyote_create_worklog` whose split devi
 or off from the lane's `timer-start`. To override (backfill/sub-window), confirm with the
 user, then `touch .claude/sessions/<sid>/worklog-split-override` (one-shot) and retry.
 
-## Breaks — /aw and /bk
+## Breaks — /:aw and /:bk
 
-Meal/meeting breaks inflate the Human bucket. Bracket them: `/aw` starts an away interval,
-`/bk` ends it. Relay the ack verbatim and wait after `/aw`. **Run `worklog-split.sh`
+Meal/meeting breaks inflate the Human bucket. Bracket them: `/:aw` starts an away interval,
+`/:bk` ends it. **Type `/:aw` / `/:bk`** — the `:` narrows slash autocomplete to exactly
+`/coyote-tracker:aw` / `/coyote-tracker:bk`; a bare `/aw` misresolves to a different,
+unrelated command. Relay the ack verbatim and wait after `/:aw`. **Run `worklog-split.sh`
 BEFORE stopping the timer** — stopping removes the lane and destroys the canonical split.
 
 ## Phase and activity — always set
