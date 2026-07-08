@@ -49,10 +49,28 @@ coyote-tracker/
 ### Design split
 
 - **Executables + rules + defaults** live in the plugin (`${CLAUDE_PLUGIN_ROOT}`),
-  versioned by `plugin.json`, auto-updated across clients.
+  versioned by `plugin.json`, auto-updated across clients (see below).
 - **Per-project state + values** live in the consumer repo (`${CLAUDE_PROJECT_DIR}`):
   `.claude/sessions/` (runtime lanes), `.claude/coyote-tracker.config` (backend + IDs),
   `docs/<date>-<key>-worklog-config.md`.
+
+### Auto-update
+
+An installed plugin is **pinned** to its version — Claude Code refreshes marketplace
+metadata on session start but never bumps an installed plugin on its own. So the plugin
+ships its own updater: `bin/self-update.sh` runs on `SessionStart` (background,
+best-effort, throttled to once per 12h via `.claude/.coyote-tracker-update-check`). It
+runs `claude plugin marketplace update` then `claude plugin update coyote-tracker@… --scope <this repo's scope>`,
+so the newest version is in place for the **next** session (a plugin update applies on
+restart, never mid-session). No per-consumer `settings.json` wiring is needed.
+
+- **Adoption is one-time per consumer.** A version installed *before* this hook existed
+  can't pull itself forward. Bootstrap each consumer once, from the repo's own directory:
+  `claude plugin marketplace update yatatechnologies && claude plugin update coyote-tracker@yatatechnologies --scope project`,
+  then restart. Every release after that propagates automatically.
+- **Opt out** with `COYOTE_TRACKER_UPDATE_THROTTLE=0` (or tune the window in seconds).
+- **Directory-source marketplaces** only see a new version once the source tree has
+  advanced to it; the `github` source above pulls from GitHub on `marketplace update`.
 
 ### Backend
 
