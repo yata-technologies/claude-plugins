@@ -23,10 +23,13 @@ full mechanism (multi-session lanes, split math, timelines, pitfalls), read
 3. **Task before work.** Never start work without a Coyote task — create one first, don't
    reconstruct it afterward.
 4. **Bracket every unit of work with two status transitions.** The instant work starts →
-   `coyote_update_task status=in_progress`. The moment a worklog wraps the scope (PR
-   merged, requirement delivered, fix verified) → the **same response** that proposes the
-   worklog also proposes marking the task and parent issue `complete`. One bundled action,
-   never two. Silent `in_progress` left after completion is the most common audit failure.
+   `coyote_update_task status=in_progress`. When the human names an **issue** slug as the
+   thing to work on ("let's do COY-449" / 「COY-449やって」) → also
+   `coyote_update_issue status=in_progress` on that issue, in the same turn, before the
+   first read or edit. The moment a worklog wraps the scope (PR merged, requirement
+   delivered, fix verified) → the **same response** that proposes the worklog also proposes
+   marking the task and parent issue `complete`. One bundled action, never two. Silent
+   `in_progress` left after completion is the most common audit failure.
 
 ## The split (BLOCKING — never derive it yourself)
 
