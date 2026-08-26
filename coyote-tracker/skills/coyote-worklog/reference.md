@@ -25,7 +25,7 @@ You are an AI assistant closely collaborating with a human engineer. Together, y
 3. **The human is the source of truth for time.** You can observe what was done, but only the human knows how long they actually spent. Always confirm time with them.
 4. **Human/AI split matters.** Coyote tracks `time_human_seconds` and `time_ai_seconds` separately. Recording this split accurately is important for project analytics and cost modeling.
 5. **Tasks must exist before work begins.** Never start work without a corresponding Coyote task. If no task exists, create one first. Do not start work and reconstruct the task afterward — this leads to forgotten logs and inaccurate timestamps.
-6. **Status reflects state — bracket every unit of work with two MCP calls.** The moment work begins on a task, call `coyote_update_task` to set `status = "in_progress"`. The moment the worklog wraps the scope (PR merged, requirement delivered, fix verified), the **same response that proposes the worklog** must also propose marking the task and parent issue `complete`. These are not two separate offers — they are one bundled action. Silently leaving items at `in_progress` after the work is done is the single most common audit failure; treat it as a bug, not an oversight.
+6. **Status reflects state — bracket every unit of work with two MCP calls.** The moment work begins on a task, call `coyote_update_task` to set `status = "in_progress"`. When the human names an **issue** slug as the thing to work on (「COY-449やって」/ "let's do COY-449"), call `coyote_update_issue` to set that issue `in_progress` too — the issue is the unit the board is scanned by, so it must not sit at `not_started` while its work is in flight. The moment the worklog wraps the scope (PR merged, requirement delivered, fix verified), the **same response that proposes the worklog** must also propose marking the task and parent issue `complete`. These are not two separate offers — they are one bundled action. Silently leaving items at `in_progress` after the work is done is the single most common audit failure; treat it as a bug, not an oversight.
 
 ---
 
@@ -277,16 +277,17 @@ If you also need adjacent info — raw `timer-start`, current wall-clock, an `ls
 
 ## What Claude Should Do
 
-### 1. Mark the Task `in_progress` the Moment Work Begins
+### 1. Mark the Task (and the Named Issue) `in_progress` the Moment Work Begins
 
 The same turn in which the task is identified or created, call `coyote_update_task` with `status: "in_progress"`. Do **not** wait until "real" work starts, do **not** batch this with other updates, do **not** assume the human will notice the task is still `todo`. The transition is part of starting work, not a separate housekeeping step.
 
 **When this fires:**
 - A new task was just created for the work about to begin → flip to `in_progress` in the next tool call.
 - The human pointed at an existing task and said "let's work on this" / 「これやろう」→ flip to `in_progress` before the first code change, file read, or investigation step.
-- You catch yourself mid-work on a task still showing `todo` → flip it immediately and continue; do not silently leave it.
+- **The human named an issue slug as the work target** — "let's do COY-449" / 「COY-449やって」→ call `coyote_update_issue` with `status: "in_progress"` on **that issue**, in the same turn, before the first read or edit. Then create or pick the task under it and flip that too. Both transitions, not one: the issue is what the board is scanned by, and an explicitly requested issue left at `not_started` is the same misreporting failure as a `todo` task in flight.
+- You catch yourself mid-work on a task still showing `todo` (or under an issue still showing `not_started`) → flip it immediately and continue; do not silently leave it.
 
-**Why this matters:** the status field is what the human (and other team members) scan to know what's actually in flight. A task left at `todo` while work is happening misrepresents project state to everyone looking at the board.
+**Why this matters:** the status field is what the human (and other team members) scan to know what's actually in flight. A task left at `todo` — or a named issue left at `not_started` — while work is happening misrepresents project state to everyone looking at the board.
 
 ### 2. Track Work Context During the Session
 
@@ -472,11 +473,12 @@ If any of these are not satisfied, prompt the human before closing out.
 
 Status transitions bracket every unit of work. The opening transition is just as important as the closing one — and it is the one Claude most often forgets, because it happens *before* anything visible has been done.
 
-**The rule:** the very next tool call after a task is identified or created for the work about to start is `coyote_update_task` with `status: "in_progress"`. Not "after I read the relevant files". Not "after the human confirms the scope". The instant the task is known.
+**The rule:** the very next tool call after a task is identified or created for the work about to start is `coyote_update_task` with `status: "in_progress"`. Not "after I read the relevant files". Not "after the human confirms the scope". The instant the task is known. The same rule applies one level up: when the human names an **issue** slug as the work target, `coyote_update_issue status="in_progress"` on it is part of that same opening move.
 
 **Concrete trigger points:**
 - You just called `coyote_create_task` → next call flips it `in_progress`.
 - The human says "let's work on COY-T142" / 「COY-T142やろう」 → fetch it if needed, then immediately flip `in_progress`.
+- The human says "let's work on COY-449" / 「COY-449やって」 — an **issue** slug, not a task slug → flip **the issue** `in_progress` with `coyote_update_issue` right away, then do the task-level flip under it. Do not defer the issue flip to the close-out; by then it never happens.
 - You start an investigation that maps to an existing task → flip `in_progress` before the first `Read`/`Grep` on the codebase.
 
 If you discover mid-session that you skipped the opening transition, flip it now and note the lapse in the worklog description ("status was left at `todo` until mid-session — corrected at HH:MM").
@@ -516,6 +518,7 @@ Don't wait until the next session's audit to catch them. Close at the moment the
 | One giant worklog for a full day | Impossible to analyze which tasks took how long | Split by task and activity |
 | Leaving phase/activity blank | Breaks per-phase and per-activity analytics | Always set phase on tasks and activity on both tasks and worklogs |
 | **Working on a task that's still `todo`** | The board misrepresents project state to everyone scanning it; humans cannot tell what's actually in flight | The instant the task is identified or created, call `coyote_update_task` with `status: "in_progress"` — before reading code, before drafting an approach |
+| **Working on an issue the human named while it's still `not_started`** | Same misreporting one level up, and worse: the issue is the unit the board and the timeline are scanned by, so an explicitly requested issue reads as untouched all session | When the human points at an issue slug, `coyote_update_issue` with `status: "in_progress"` in the same turn as the task flip — before the first read or edit |
 | Leaving the timer running without recording the closing worklog | The lane lingers until 24h `last-active` sweep — prior session's elapsed and split data is silently discarded then | Record the closing worklog and emit `🛑 Session closed.` before `/exit`; otherwise the work is lost |
 | **Logging the worklog but forgetting to close the linked task/issue** | The most common audit failure — items pile up at `in_progress` with completed worklogs underneath, and the next session's audit has to reverse-engineer what was done | Treat the close-out as **part of the worklog action**, not a separate offer. Every worklog proposal for a scope-closing event must in the same message also propose the task/issue transitions to `complete`. COY-183 gates the session-close marker on this — silent close-outs no longer end the session |
 | Sending a worklog offer at a scope-closing moment without the bundled close proposal | Pushes the close onto the human's memory; they will not remember | Before sending any worklog offer, run the four-question checklist in §5 and revise if any answer is N |
