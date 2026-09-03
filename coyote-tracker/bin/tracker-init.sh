@@ -4,7 +4,7 @@
 # Scaffolds the per-consumer files that the plugin CANNOT auto-install (they must live
 # in the consumer repo, not the plugin cache) into ${CLAUDE_PROJECT_DIR}:
 #   1. .claude/coyote-tracker.config           — backend + status tools       (team-shared, commit)
-#   2. docs/<key>-worklog-config.md            — category/phase/activity IDs  (team-shared, commit)
+#   2. docs/<key>-worklog-config.md            — phase/activity IDs + category rule (team-shared, commit)
 #                                                + the tool-named status-transition table (COY-403)
 #   3. .claude/bin/<name>.sh wrappers          — thin bridges to plugin scripts (team-shared, commit)
 #   4. .claude/settings.local.json             — statusLine + allow-list       (user-local, git-ignored)
@@ -159,8 +159,9 @@ fi
 echo "Next:"
 echo "  1. RESTART this session (or /clear) — statusLine + the allow-list only take"
 echo "     effect on the next session start; the timer/hooks are already live."
-echo "  2. Fill category/phase/activity IDs in the worklog-config doc"
-echo "     (coyote_list_categories / coyote_list_phases / coyote_list_activities),"
+echo "  2. Fill the phase/activity IDs in the worklog-config doc"
+echo "     (coyote_list_phases / coyote_list_activities) — leave the category"
+echo "     section as the selection rule, do NOT paste a category table into it,"
 echo "     and confirm its status-transition table names the tools THIS backend has"
 echo "     (must match task_update_tool / issue_update_tool / status_* in the config)."
 echo "  3. Commit the team-shared files (.claude/coyote-tracker.config, .claude/bin/*.sh,"

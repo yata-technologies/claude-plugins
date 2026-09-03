@@ -72,6 +72,27 @@ Never leave phase/activity blank on a task or worklog. Pull the project's IDs fr
 `docs/<key>-worklog-config.md` (scaffolded by `/coyote-tracker:init`); if absent,
 use `coyote_list_phases` / `coyote_list_activities`.
 
+## Category — always set, on the ISSUE
+
+Category is decided at **issue** creation, not task creation: a task takes its category from its
+parent issue and cannot be given one at create time. So the moment that matters is when principle
+#3 ("task before work") makes you spin up a **parent issue** for ad-hoc work — that is where
+categories go blank — and a blank one matches no category filter, collapses into the trailing
+"No Category" bucket wherever a view groups by Category, and renders its worklogs as
+"Uncategorized" on the Timeline.
+
+Unlike phases and activities, do **not** read a list of categories out of
+`docs/<key>-worklog-config.md`. Categories are per-project and grow by design, so any table there
+is stale — call `coyote_list_categories` and choose from what it returns, following the selection
+rule that doc states:
+
+- A category names **which part of the system** the work touches, never what kind of work it is.
+  Never `Bug` / `Feature` / `requirement` / `バグ` / `その他`.
+- If nothing fits, propose a **new, specific** category instead of widening a broad one. A project
+  with a catch-all bucket ends up with everything in it and learns nothing from the field.
+- A name absent from the project's master is rejected with a 400 that lists the valid ones, so a
+  wrong guess costs one retry. **A blank is accepted silently** — that is the failure to avoid.
+
 ## Closing the session
 
 Emit `🛑 Session closed.` on its own line (line-anchored regex
