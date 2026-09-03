@@ -1,0 +1,112 @@
+name: PR checks
+
+# The tagging workflow can only record a release that actually happened. What
+# makes the process hold is this gate: you cannot change a plugin's shipped
+# behaviour on main without moving its version. Without it, main silently drifts
+# ahead of the newest tag and every tag stops meaning anything.
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  version-bump:
+    name: Plugin changes bump the version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Every touched plugin has a version bump
+        run: |
+          set -euo pipefail
+          base="origin/${{ github.base_ref }}"
+          # No --depth here: checkout used fetch-depth 0, and mixing a shallow
+          # fetch into a full clone makes the three-dot diff below unreliable.
+          git fetch --no-tags origin "${{ github.base_ref }}"
+
+          failed=0
+          for manifest in */.claude-plugin/plugin.json; do
+            plugin=$(dirname "$(dirname "$manifest")")
+
+            # Did anything the plugin actually ships change? Docs at the repo
+            # root (README, PORTING) are deliberately out of scope — they never
+            # reach a consumer's cache, so requiring a bump for them would train
+            # people to bump for nothing, which is how the discipline dies.
+            if git diff --quiet "$base"...HEAD -- "$plugin"; then
+              echo "· $plugin: untouched"
+              continue
+            fi
+
+            new=$(jq -r '.version' "$manifest")
+            old=$(git show "$base:$manifest" 2>/dev/null | jq -r '.version' || echo "")
+
+            if [ -z "$old" ] || [ "$old" = "null" ]; then
+              echo "✔ $plugin: new plugin at $new"
+              continue
+            fi
+            if [ "$old" = "$new" ]; then
+              echo "::error file=$manifest::$plugin changed but its version is still $old — bump it. Merging to main releases this field to every consumer."
+              failed=1
+              continue
+            fi
+            # Reject a re-used version number: tags are immutable, so shipping a
+            # version that already has one would leave that tag pointing at code
+            # nobody runs.
+            if git rev-parse -q --verify "refs/tags/$(jq -r .name "$manifest")--v${new}" >/dev/null; then
+              echo "::error file=$manifest::version $new is already tagged — pick a higher version."
+              failed=1
+              continue
+            fi
+            echo "✔ $plugin: $old → $new"
+          done
+          exit $failed
+
+  validate:
+    name: Manifests validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+
+      - name: Install Claude Code CLI
+        run: npm install -g @anthropic-ai/claude-code
+
+      # --strict fails on unrecognized fields and missing metadata that the
+      # runtime would otherwise tolerate silently. Needs no auth.
+      - name: Validate marketplace + every plugin
+        run: |
+          set -euo pipefail
+          claude plugin validate . --strict
+          for manifest in */.claude-plugin/plugin.json; do
+            claude plugin validate "$(dirname "$(dirname "$manifest")")" --strict
+          done
+
+  shell:
+    name: Hook scripts parse
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # These hooks run on every session start and tool call in every consumer
+      # repo. A syntax error ships silently to everyone on their next restart,
+      # so this is the cheapest guard against the worst outcome.
+      - name: bash -n every shipped script
+        run: |
+          set -euo pipefail
+          found=0
+          while IFS= read -r -d '' f; do
+            bash -n "$f"
+            echo "✔ $f"
+            found=1
+          done < <(find . -path ./.git -prune -o -name '*.sh' -print0)
+          if [ "$found" != "1" ]; then
+            echo "no scripts found — check the glob"
+            exit 1
+          fi

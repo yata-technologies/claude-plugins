@@ -1,0 +1,70 @@
+name: Tag plugin release
+
+# Distribution is the default branch: consumers resolve `source: github` against
+# main, so merging IS the release. This workflow does NOT gate that — it records
+# it. Every released version gets an immutable `<plugin>--v<version>` tag so the
+# history is auditable and any past version is recoverable, which a moving
+# branch alone cannot give us.
+#
+# Idempotent by design (mirrors coyote-mcp's version-gated npm publish): a tag is
+# created only when plugin.json carries a version that has none yet, so a re-run
+# or an unrelated main push is a no-op.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '*/.claude-plugin/plugin.json'
+      - '.claude-plugin/marketplace.json'
+  workflow_dispatch:
+
+permissions:
+  contents: write   # required to push the tag
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0   # need existing tags to detect an already-released version
+
+      # Every plugin in the repo, not just coyote-tracker — the marketplace is
+      # allowed to grow, and the release process must not need editing when it does.
+      - name: Tag any plugin whose version is not yet released
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          created=()
+          skipped=()
+          for manifest in */.claude-plugin/plugin.json; do
+            name=$(jq -r '.name' "$manifest")
+            version=$(jq -r '.version' "$manifest")
+            if [ -z "$name" ] || [ "$name" = "null" ] || [ -z "$version" ] || [ "$version" = "null" ]; then
+              echo "::error file=$manifest::plugin.json must carry both name and version"
+              exit 1
+            fi
+            tag="${name}--v${version}"
+            if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+              skipped+=("$tag")
+              continue
+            fi
+            git tag -a "$tag" -m "$name $version"
+            git push origin "refs/tags/$tag"
+            created+=("$tag")
+          done
+
+          {
+            echo "### Plugin release tags"
+            if [ "${#created[@]}" -gt 0 ]; then
+              printf -- '- created `%s`\n' "${created[@]}"
+            fi
+            if [ "${#skipped[@]}" -gt 0 ]; then
+              printf -- '- already released, skipped `%s`\n' "${skipped[@]}"
+            fi
+            if [ "${#created[@]}" -eq 0 ] && [ "${#skipped[@]}" -eq 0 ]; then
+              echo "- no plugin manifests found"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

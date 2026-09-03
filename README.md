@@ -118,7 +118,38 @@ git-ignored via the `.coyote-tracker-*` glob that tracker-init and the updater b
 
 - **Directory-source marketplaces** only see a new version once the source tree has
   advanced to it; the `github` source above pulls from GitHub on `marketplace update`.
-- **Releasing:** bump `plugin.json`, then `claude plugin tag` to cut the release tag.
+
+### Releasing (maintainer notes)
+
+**Merging to `main` is the release.** The marketplace source is
+`{ source: github, repo: Yata-Technologies/claude-plugins }` with no ref pinning —
+`claude plugin marketplace add` has no `--ref` option — so every consumer resolves
+against the default branch. There is no publish step, and **tags do not gate
+distribution**: they are release history, so a version is auditable and recoverable
+after `main` has moved on.
+
+What a maintainer does:
+
+1. **Bump `version` in `<plugin>/.claude-plugin/plugin.json` in the same PR as the
+   change.** This is the only manual step, and CI enforces it (below).
+2. Merge to `main`. `.github/workflows/release-tag.yml` then creates and pushes
+   `<name>--v<version>` — the same tag shape `claude plugin tag` produces. It skips a
+   version that already has a tag, so re-runs and unrelated pushes are no-ops.
+
+`.github/workflows/pr-checks.yml` is what keeps this from rotting:
+
+| Job | Fails when |
+|---|---|
+| `version-bump` | files under a plugin dir changed but its `version` did not, or the new version already has a tag. Root-level docs (README/PORTING) are exempt — they never reach a consumer's cache |
+| `validate` | `claude plugin validate --strict` rejects the marketplace or any plugin manifest |
+| `shell` | any shipped `*.sh` fails `bash -n`. These hooks run on every session start in every consumer repo, so a syntax error would ship silently to everyone |
+
+To cut a tag by hand (rarely needed — the workflow does it):
+`claude plugin tag <plugin-dir> --push`. Tags `coyote-tracker--v0.1.0` … `v0.5.1`
+were backfilled from the commit at which each version was last current.
+
+**Rolling back** is a forward bump, never a tag move: tags are immutable and consumers
+track `main`, so revert the change, bump to the next version, and merge.
 
 ### Backend
 
