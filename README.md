@@ -7,6 +7,12 @@ Git-backed Claude Code plugin marketplace owned by Yata Technologies.
 coyote-tracker/                     ← Coyote Tracker plugin (see its own notes)
 ```
 
+**Prerequisite on every machine: `jq`.** Every Tracker hook parses its payload with it, so
+without jq the timer never starts and no Human/AI split is ever computed — the toolset
+degrades to nothing rather than to an error. Since 0.8.0 that is announced on turn 1
+(SessionStart notice + `⚠ TRACKER OFF` in the statusline) instead of being discovered hours
+later at worklog time (COY-402).
+
 There are two audiences for this plugin, and they do different things **once**:
 
 - **Repo manager** wires the plugin into a consumer repo a single time — see
@@ -115,6 +121,14 @@ it runs `claude plugin marketplace update`, then derives the install id + scope 
 consumer repo, so `--scope project` self-heals whichever consumer it fires in — no hardcoded
 marketplace name or project path. Its state files (`.coyote-tracker-update-check` + log) are
 git-ignored via the `.coyote-tracker-*` glob that tracker-init and the updater both maintain.
+
+**Re-scaffolding after an upgrade (0.8.0).** `.claude/.coyote-tracker-initialized` now stores
+the plugin version it was written for, not just "done". The SessionStart hook compares it to
+the running version and re-runs `tracker-init.sh` when they differ; init in turn rewrites any
+`.claude/bin/*.sh` wrapper that has drifted from `templates/bin-wrapper.sh.template`. The
+wrappers are the only Tracker code a consumer repo commits, so without this a fix to that
+template could never reach an already-scaffolded repo — the exact population that needs it.
+The re-run prints nothing when there was nothing to do (`TRACKER_INIT_QUIET_IF_NOOP=1`).
 
 - **Directory-source marketplaces** only see a new version once the source tree has
   advanced to it; the `github` source above pulls from GitHub on `marketplace update`.

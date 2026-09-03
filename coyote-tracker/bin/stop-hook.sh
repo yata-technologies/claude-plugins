@@ -260,7 +260,9 @@ else
     warns=$(cat "$split_err")
     rm -f "$split_err"
     if [ -n "$split" ]; then
-      IFS=$'\t' read -r tot ai_s human_s ai_fmt human_fmt auto_s <<< "$split"
+      # 7 fields since COY-402 — the trailing effective-start epoch must have its
+      # own variable, or `read` folds it into auto_s and the auto-away note dies.
+      IFS=$'\t' read -r tot ai_s human_s ai_fmt human_fmt auto_s _start_s <<< "$split"
       auto_note=""
       [ "${auto_s:-0}" -gt 0 ] 2>/dev/null && auto_note=$(printf ' (auto-away excluded %ds of idle — timer preserved, no /clear/bk needed)' "$auto_s")
       split_line=$(printf ' Canonical split (worklog-split.sh %s): seconds=%d, time_ai_seconds=%d (%s), time_human_seconds=%d (%s)%s — use verbatim if logging now.' \

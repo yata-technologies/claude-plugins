@@ -50,9 +50,12 @@
 #   AWAY_START at end-of-stream (open away block, no `bk` yet) is also warned.
 #
 # Prints one line, tab-separated:
-#   total_s<TAB>ai_s<TAB>human_s<TAB>ai_HH:MM:SS<TAB>human_HH:MM:SS<TAB>auto_away_s
+#   total_s<TAB>ai_s<TAB>human_s<TAB>ai_HH:MM:SS<TAB>human_HH:MM:SS<TAB>auto_away_s<TAB>start_epoch
 # The 6th field (auto_away_s) is the idle time reclassified out of Human by the
-# idle cap; 0 when none. Kept last so positional readers of the first five
+# idle cap; 0 when none. The 7th is the EFFECTIVE window start — normally this
+# lane's timer-start, but the predecessor's when a rotated session id was stitched
+# in (COY-402), which is why callers must read start_time from here rather than
+# from the lane file. Both kept last so positional readers of the first five
 # fields are unaffected.
 # Warnings (if any) are written to stderr and do not affect exit code.
 set -euo pipefail
@@ -92,6 +95,44 @@ log_file="$LANE/turn-log"
 
 start=$(cat "$timer_file")
 now=$(date +%s)
+
+# --- session-id chain: adopt the predecessor lane, or prove it must not be (COY-402) ---
+#
+# chain-detect.sh nominated a candidate at SessionStart and recorded its last-active
+# mtime alongside it. Adopt ONLY if that mtime is unchanged: a live session touches
+# last-active on every prompt, so a peer silent from before this session began through
+# to now is not live, and its turn-log belongs to the same stretch of work. If it moved,
+# the candidate was a concurrent session — drop it and say so rather than double-counting
+# someone else's hours into this worklog.
+CHAIN="$LANE/chain-predecessor"
+if [ -f "$CHAIN" ]; then
+  peer_sid=""; peer_mtime=""
+  read -r peer_sid peer_mtime < "$CHAIN" || true
+  peer_lane="$SESSIONS/$peer_sid"
+  ref="$peer_lane/last-active"; [ -e "$ref" ] || ref="$peer_lane"
+  cur_mtime=$(stat -c %Y "$ref" 2>/dev/null || stat -f %m "$ref" 2>/dev/null || true)
+
+  if [ ! -f "$peer_lane/timer-start" ] || [ ! -s "$peer_lane/turn-log" ]; then
+    rm -f "$CHAIN"
+    printf '[worklog-split] WARNING: predecessor lane %s is gone (swept or closed) — its time could not be stitched in and this split covers only the current window (COY-402).\n' \
+      "${peer_sid:0:8}" > "/dev/stderr"
+  elif [ "$cur_mtime" != "$peer_mtime" ]; then
+    rm -f "$CHAIN"
+    printf '[worklog-split] NOTE: candidate predecessor lane %s has been active since this session started, so it is a concurrent session, not this one'"'"'s predecessor. Nothing was adopted — this split covers only the current window (COY-402).\n' \
+      "${peer_sid:0:8}" > "/dev/stderr"
+  else
+    peer_start=$(cat "$peer_lane/timer-start")
+    merged=$(mktemp "${TMPDIR:-/tmp}/coyote-split-XXXXXX")
+    trap 'rm -f "$merged"' EXIT
+    cat "$peer_lane/turn-log" "$log_file" > "$merged"
+    log_file="$merged"
+    start="$peer_start"
+    # Mark the peer so a third session cannot adopt the same turn-log again.
+    : > "$peer_lane/chain-consumed"
+    printf '[worklog-split] WARNING: session id rotated — stitched in predecessor lane %s (window opened %s). This split covers BOTH lanes; the gap between them is treated as a human gap and capped by the idle cap. Say so when reporting the figures (COY-402).\n' \
+      "${peer_sid:0:8}" "$(date -d "@$peer_start" +%H:%M:%S 2>/dev/null || echo "$peer_start")" > "/dev/stderr"
+  fi
+fi
 
 # Auto-away idle cap (COY): each human gap contributes at most this many seconds
 # to Human; the excess is reclassified as away. 0 disables auto-away entirely.
@@ -163,4 +204,4 @@ human=$((total - ai))
 
 fmt() { printf '%02d:%02d:%02d' $(( $1 / 3600 )) $(( ($1 % 3600) / 60 )) $(( $1 % 60 )); }
 
-printf '%d\t%d\t%d\t%s\t%s\t%d\n' "$total" "$ai" "$human" "$(fmt "$ai")" "$(fmt "$human")" "$auto_away"
+printf '%d\t%d\t%d\t%s\t%s\t%d\t%d\n' "$total" "$ai" "$human" "$(fmt "$ai")" "$(fmt "$human")" "$auto_away" "$start"

@@ -4,6 +4,15 @@
 # .claude/sessions/<session_id>/timer-start. Each terminal naturally renders only
 # its own session's timer.
 
+# The statusline is the one Tracker surface a human looks at every turn, so it is
+# where "there is no timer" has to be visible (COY-402). Without jq nothing here can
+# be parsed — say that rather than rendering an empty line that reads as normal.
+if ! command -v jq >/dev/null 2>&1; then
+  cat >/dev/null
+  echo "⚠ COYOTE TRACKER OFF — jq not installed"
+  exit 0
+fi
+
 input=$(cat)
 cwd=$(echo "$input" | jq -r '.workspace.current_dir // .cwd // ""')
 home="${HOME:-}"
@@ -26,8 +35,15 @@ fi
 
 timer=""
 sid=$(echo "$input" | jq -r '.session_id // ""')
-if [ -n "$project_dir" ] && [ -n "$sid" ]; then
+if [ -z "$sid" ]; then
+  # No session id in the payload — the same condition the hooks trip on.
+  timer=" | ⚠ TRACKER OFF (no session id)"
+elif [ -n "$project_dir" ]; then
   timer_file="$project_dir/.claude/sessions/$sid/timer-start"
+  # Default to the warning and let a readable timer-start replace it. A blank
+  # slot is indistinguishable from a repo that never installed the Tracker, and
+  # that ambiguity is what let untracked sessions run for hours unnoticed.
+  timer=" | ⚠ TRACKER OFF"
   if [ -f "$timer_file" ]; then
     start_epoch=$(cat "$timer_file" 2>/dev/null)
     if [ -n "$start_epoch" ] && [ "$start_epoch" -eq "$start_epoch" ] 2>/dev/null; then
@@ -43,6 +59,9 @@ if [ -n "$project_dir" ] && [ -n "$sid" ]; then
       fi
     fi
   fi
+else
+  # No project dir resolved — there is nowhere for a lane to live either.
+  timer=" | ⚠ TRACKER OFF (no project dir)"
 fi
 
 echo "$short_cwd$branch$timer"

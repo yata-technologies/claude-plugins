@@ -30,8 +30,21 @@ sid=$(printf '%s' "$input" | jq -r '.session_id // ""' 2>/dev/null || true)
 now=$(date +%s)
 ts=$(date +%H:%M:%S)
 
+# No lane on this turn either. The old text stated the fact and stopped there —
+# and was read past on 32 worklogs, each of which then carried a hand-estimated
+# split (COY-402). State the consequence and the required action instead; the
+# SessionStart notice can be missed (a resumed session, a long transcript), so
+# this repeats on every turn until it is fixed.
 if [ -z "$sid" ]; then
-  printf '[turn-ts %s %s | session MISSING | elapsed --:--:-- | session_id absent — multi-session toolset cannot operate]' "$ts" "$now"
+  if command -v jq >/dev/null 2>&1; then
+    cause='session_id absent from the hook payload'
+    fix='upgrade Claude Code (and confirm `jq -n 1` prints 1), then restart the session'
+  else
+    cause='`jq` is not installed, so the hooks cannot parse their input'
+    fix='install jq (apt-get/brew install jq), then restart the session'
+  fi
+  printf '[turn-ts %s %s | session MISSING | elapsed --:--:-- | ⚠️ COYOTE TRACKER NOT ATTACHED — %s, so no lane exists and NO mechanical Human/AI split can be computed for this session. Tell the user now, in this response: "Coyote Tracker is not attached (%s) — to fix it, %s. Until then any worklog we file would carry a hand estimate, not a measured split." Do NOT invent a split (a round 50/50 is the usual tell); if a worklog is filed anyway, say in its description that the split is self-reported.]' \
+    "$ts" "$now" "$cause" "$cause" "$fix"
   exit 0
 fi
 
