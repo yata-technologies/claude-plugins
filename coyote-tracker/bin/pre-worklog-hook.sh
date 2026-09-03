@@ -43,12 +43,17 @@ BIN_DIR="${CLAUDE_PLUGIN_ROOT:-$DIR}/bin"
 # injection below still reads/writes Coyote MCP tool_input field names
 # (seconds/time_ai_seconds/time_human_seconds/start_time). A non-Coyote backend
 # with different param names needs a field-mapping layer (out of scope for T480).
-CONFIG="$DIR/coyote-tracker.config"
-backend_tool="mcp__coyote__coyote_create_worklog"
-if [ -f "$CONFIG" ]; then
-  cfg_val=$(sed -nE 's/^[[:space:]]*backend_tool[[:space:]]*=[[:space:]]*([^[:space:]#]+).*/\1/p' "$CONFIG" | tail -1)
-  [ -n "$cfg_val" ] && backend_tool="$cfg_val"
+TRACKER_CONFIG="$DIR/coyote-tracker.config"
+if [ -r "$BIN_DIR/tracker-config.sh" ]; then
+  . "$BIN_DIR/tracker-config.sh"
+else
+  # Defensive: a partially-installed plugin tree must not break the session.
+  # Fall back to defaults-only lookups rather than emitting garbled reminders.
+  tracker_cfg() { printf '%s' "${2-}"; }
+  tracker_tool_label() { printf '%s' "${1##*__}"; }
+  tracker_status_matches() { case ",${2// /}," in *",$1,"*) return 0;; *) return 1;; esac; }
 fi
+backend_tool=$(tracker_cfg backend_tool "mcp__coyote__coyote_create_worklog")
 
 input=$(cat)
 tool=$(printf '%s' "$input" | jq -r '.tool_name // ""')

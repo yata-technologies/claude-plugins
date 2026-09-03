@@ -3,8 +3,9 @@
 #
 # Scaffolds the per-consumer files that the plugin CANNOT auto-install (they must live
 # in the consumer repo, not the plugin cache) into ${CLAUDE_PROJECT_DIR}:
-#   1. .claude/coyote-tracker.config           — backend + defaults          (team-shared, commit)
+#   1. .claude/coyote-tracker.config           — backend + status tools       (team-shared, commit)
 #   2. docs/<key>-worklog-config.md            — category/phase/activity IDs  (team-shared, commit)
+#                                                + the tool-named status-transition table (COY-403)
 #   3. .claude/bin/<name>.sh wrappers          — thin bridges to plugin scripts (team-shared, commit)
 #   4. .claude/settings.local.json             — statusLine + allow-list       (user-local, git-ignored)
 #
@@ -57,9 +58,27 @@ fi
 #    the repo dir name; the engineer renames/fills as needed. Skip if the repo already
 #    carries ANY *worklog-config.md (any key) — a teammate's clone already has the
 #    committed doc, and matching only the exact keyed name would scaffold a duplicate.
+#
+#    COY-403: the doc's status-transition table is scaffolded with the CONCRETE tool
+#    names this consumer's backend uses, read back from the config written in step 1
+#    (or from a pre-existing one). The shared skill states the "flip to in-progress at
+#    work start" rule abstractly; this doc is where it becomes a named call the model
+#    can actually make. A placeholder left in the doc means a consumer whose backend
+#    has no such tool gets a rule it cannot execute — which is the whole bug.
 if [ ! -e "$doc" ]; then
   mkdir -p "$PROJECT_DIR/docs"
-  cp "$TEMPLATES/worklog-config.template.md" "$doc"
+  TRACKER_CONFIG="$cfg"
+  . "$PLUGIN_ROOT/bin/tracker-config.sh"
+  t_task_update=$(tracker_tool_label "$(tracker_cfg task_update_tool "mcp__coyote__coyote_update_task")")
+  t_issue_update=$(tracker_tool_label "$(tracker_cfg issue_update_tool "mcp__coyote__coyote_update_issue")")
+  t_in_progress=$(tracker_cfg status_in_progress "in_progress")
+  # Render the closed set as `a` / `b` rather than the raw comma list.
+  t_closed=$(tracker_cfg status_closed "complete,cancelled" | sed -E 's/[[:space:]]*,[[:space:]]*/` \/ `/g')
+  sed -e "s|<TASK_UPDATE_TOOL>|${t_task_update}|g" \
+      -e "s|<ISSUE_UPDATE_TOOL>|${t_issue_update}|g" \
+      -e "s|<STATUS_IN_PROGRESS>|${t_in_progress}|g" \
+      -e "s|<STATUS_CLOSED>|${t_closed}|g" \
+      "$TEMPLATES/worklog-config.template.md" > "$doc"
   created+=("$doc")
 fi
 
@@ -141,6 +160,8 @@ echo "Next:"
 echo "  1. RESTART this session (or /clear) — statusLine + the allow-list only take"
 echo "     effect on the next session start; the timer/hooks are already live."
 echo "  2. Fill category/phase/activity IDs in the worklog-config doc"
-echo "     (coyote_list_categories / coyote_list_phases / coyote_list_activities)."
+echo "     (coyote_list_categories / coyote_list_phases / coyote_list_activities),"
+echo "     and confirm its status-transition table names the tools THIS backend has"
+echo "     (must match task_update_tool / issue_update_tool / status_* in the config)."
 echo "  3. Commit the team-shared files (.claude/coyote-tracker.config, .claude/bin/*.sh,"
 echo "     docs/*-worklog-config.md). settings.local.json is user-local — leave git-ignored."
