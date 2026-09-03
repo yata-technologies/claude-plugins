@@ -122,9 +122,28 @@ git-ignored via the `.coyote-tracker-*` glob that tracker-init and the updater b
 
 ### Backend
 
-Default worklog backend is Coyote MCP (`mcp__coyote__coyote_create_worklog`). A consumer
-on another backend sets `backend_tool` in `.claude/coyote-tracker.config`. See PORTING.md
-for the matcher-broadening work this still requires.
+Every backend-specific identifier lives in `.claude/coyote-tracker.config`, and every
+default there is Coyote MCP's value — the plugin itself hardcodes no tracker and no
+particular deployment. A consumer on another backend overrides only the keys that differ:
+
+| Key | Default | What it names |
+|---|---|---|
+| `backend_tool` | `mcp__coyote__coyote_create_worklog` | the worklog write |
+| `task_create_tool` | `mcp__coyote__coyote_create_task` | task creation (drives the "flip it now" nudge) |
+| `task_update_tool` | `mcp__coyote__coyote_update_task` | task status change — **named verbatim in every hook reminder** |
+| `issue_update_tool` | `mcp__coyote__coyote_update_issue` | issue status change |
+| `task_slug_pattern` | `[A-Z][A-Z0-9]+-T[0-9]+` | how to read a task slug out of the create response |
+| `status_not_started` / `status_in_progress` / `status_closed` | `not_started` / `in_progress` / `complete,cancelled` | the status vocabulary (`status_closed` is a comma-separated set) |
+| `worklog_config_doc` | — | pointer to the project's category/phase/activity doc |
+
+The status keys were added in 0.6.0 (COY-403): before them the hooks named Coyote MCP's
+tools literally, so on any other backend the "set it in progress at work start" rule named
+a call the model could not make and the flip silently never happened. `tracker-init` now
+scaffolds the concrete, per-backend tool names into the consumer's worklog-config doc.
+
+**Known limitation** (unchanged): the pre-worklog hook's split/`start_time` injection still
+writes Coyote MCP `tool_input` field names. A backend with different param names needs a
+field-mapping layer — see PORTING.md §2.
 
 ---
 

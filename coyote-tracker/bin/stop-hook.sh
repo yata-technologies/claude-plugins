@@ -30,7 +30,7 @@
 # The marker is Claude's responsibility: emit it only after both the human
 # signalled wind-down AND the closing worklog was recorded. The COY-183
 # gate is the safety net for the close-out-bundle-with-worklog rule —
-# advisory prose (CLAUDE-COYOTE-HUMAN.md) and post-worklog reminders
+# advisory prose in the skill and post-worklog reminders
 # weren't sufficient on their own.
 set -uo pipefail
 
@@ -39,6 +39,30 @@ DIR="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}/
 # resolve from the plugin install dir under the plugin edition (COY-342),
 # falling back to $DIR/bin for the legacy copy-edition layout.
 BIN_DIR="${CLAUDE_PLUGIN_ROOT:-$DIR}/bin"
+
+# Backend identifiers are configurable (COY-403). The reminders below must name
+# the tool the CONSUMER actually has — a reminder naming a tool that does not
+# exist on this backend is why the start-side flip was not self-executing.
+# Defaults are Coyote MCP's values.
+TRACKER_CONFIG="$DIR/coyote-tracker.config"
+if [ -r "$BIN_DIR/tracker-config.sh" ]; then
+  . "$BIN_DIR/tracker-config.sh"
+else
+  # Defensive: a partially-installed plugin tree must not break the session.
+  # Fall back to defaults-only lookups rather than emitting garbled reminders.
+  tracker_cfg() { printf '%s' "${2-}"; }
+  tracker_tool_label() { printf '%s' "${1##*__}"; }
+  tracker_status_matches() { case ",${2// /}," in *",$1,"*) return 0;; *) return 1;; esac; }
+fi
+task_update_label=$(tracker_tool_label "$(tracker_cfg task_update_tool "mcp__coyote__coyote_update_task")")
+issue_update_label=$(tracker_tool_label "$(tracker_cfg issue_update_tool "mcp__coyote__coyote_update_issue")")
+status_in_progress=$(tracker_cfg status_in_progress "in_progress")
+status_closed=$(tracker_cfg status_closed "complete,cancelled")
+# Display forms of the closed set: the first entry is the verb the reminders tell
+# the model to set; the full set is what the gate reports as "not marked ...".
+status_closed_list=$(printf '%s' "$status_closed" | sed -E 's/[[:space:]]*,[[:space:]]*/\//g')
+status_closed_primary="${status_closed%%,*}"
+status_closed_primary="${status_closed_primary%"${status_closed_primary##*[![:space:]]}"}"
 
 input=$(cat)
 sid=$(printf '%s' "$input" | jq -r '.session_id // ""' 2>/dev/null || true)
@@ -125,7 +149,7 @@ if [ "$closed" = "1" ]; then
     # visible (the statusline still shows TIMER). Next turn the agent
     # must either propose the close-outs or write the ack, then re-emit
     # the close marker.
-    printf '[ai-end %s] ❌ CLOSE-OUT GATE BLOCKED (COY-183). You emitted `🛑 Session closed.` but pending close-outs exist for session %s.\n  Tasks with a worklog logged this session but NOT marked complete/cancelled: %s\nThe session lane is NOT removed and the timer is still running. In this response (or the next), do ONE of:\n  (a) Propose marking each pending task `complete` via `coyote_update_task` (plus the parent issue via `coyote_update_issue` when this worklog wraps the full issue scope). After the user confirms and the calls fire, re-emit `🛑 Session closed.` on its own line.\n  (b) If the work genuinely carries to a future session (multi-day task, mid-day transition log), run `.claude/bin/carry-over-ack.sh %s "<reason>"` — one-shot, auto-consumed when the lane is removed — and then re-emit `🛑 Session closed.`.\nDo not silently end the session. Silent close-outs were the COY-180 follow-up bug; the gate is the safety net.' "$ts" "$sid_short" "$pending_flat" "$sid_short"
+    printf '[ai-end %s] ❌ CLOSE-OUT GATE BLOCKED (COY-183). You emitted `🛑 Session closed.` but pending close-outs exist for session %s.\n  Tasks with a worklog logged this session but NOT marked %s: %s\nThe session lane is NOT removed and the timer is still running. In this response (or the next), do ONE of:\n  (a) Propose marking each pending task `%s` via `%s` (plus the parent issue via `%s` when this worklog wraps the full issue scope). After the user confirms and the calls fire, re-emit `🛑 Session closed.` on its own line.\n  (b) If the work genuinely carries to a future session (multi-day task, mid-day transition log), run `.claude/bin/carry-over-ack.sh %s "<reason>"` — one-shot, auto-consumed when the lane is removed — and then re-emit `🛑 Session closed.`.\nDo not silently end the session. Silent close-outs were the COY-180 follow-up bug; the gate is the safety net.' "$ts" "$sid_short" "$status_closed_list" "$pending_flat" "$status_closed_primary" "$task_update_label" "$issue_update_label" "$sid_short"
     exit 0
   fi
 
@@ -161,7 +185,7 @@ if [ "$closed" = "1" ]; then
   [ -f "$LANE/issues-closed-this-session" ] && \
     issues_closed_n=$(grep -c '[^[:space:]]' "$LANE/issues-closed-this-session" 2>/dev/null || true)
   if [ "${tasks_closed_n:-0}" -gt 0 ] && [ "${issues_closed_n:-0}" -eq 0 ]; then
-    issue_nudge_line=$(printf ' ⚠️ ISSUE CLOSE-OUT NUDGE (COY-390): you closed %s task(s) this session but did NOT close any issue. If any of those tasks wrapped its parent issue'\''s full scope — the recurring audit gap, e.g. COY-387 left open after COY-T506 shipped — that parent issue should be `complete` too. In your closing message, EITHER propose closing the parent issue(s) via `coyote_update_issue`, OR state explicitly that each parent has remaining work / a deferral and is intentionally staying open. Soft nudge, not a block — the lane is already removed, so act on it in THIS response.' "$tasks_closed_n")
+    issue_nudge_line=$(printf ' ⚠️ ISSUE CLOSE-OUT NUDGE (COY-390): you closed %s task(s) this session but did NOT close any issue. If any of those tasks wrapped its parent issue'\''s full scope — the recurring audit gap is a shipped task whose parent issue is left open — that parent issue should be `%s` too. In your closing message, EITHER propose closing the parent issue(s) via `%s`, OR state explicitly that each parent has remaining work / a deferral and is intentionally staying open. Soft nudge, not a block — the lane is already removed, so act on it in THIS response.' "$tasks_closed_n" "$status_closed_primary" "$issue_update_label")
   fi
 
   rm -rf "$LANE"
@@ -181,7 +205,7 @@ else
   # COY-180: if a task was just created this turn (PostToolUse hook dropped
   # LANE/task-just-created), nudge the agent to flip it to in_progress
   # immediately. The opening status transition is the one most often
-  # forgotten — md guidance (CLAUDE-COYOTE-HUMAN.md §1) wasn't sufficient,
+  # forgotten — skill prose alone wasn't sufficient,
   # so we surface a mechanical reminder here. Skipped when the task was
   # already created with status=in_progress (the happy path). Consume the
   # marker on read so the reminder fires once per task creation.
@@ -189,8 +213,8 @@ else
   if [ -f "$LANE/task-just-created" ]; then
     read -r _ _ t_slug t_status < "$LANE/task-just-created" || true
     rm -f "$LANE/task-just-created"
-    if [ -n "${t_slug:-}" ] && [ "${t_status:-}" != "in_progress" ]; then
-      task_just_created_line=$(printf ' ⚠️ TASK %s JUST CREATED THIS TURN (status=%s, COY-180 — opening transition). If work on this task is starting now (the typical case), in THIS response call `coyote_update_task` with slug=%s, status=in_progress BEFORE the first Read/Grep/Edit on the codebase. The board misrepresents project state while a task you'\''re actively working on shows as %s. Skip this nudge only if the task was created for someone else / a future session.' "$t_slug" "$t_status" "$t_slug" "$t_status")
+    if [ -n "${t_slug:-}" ] && [ "${t_status:-}" != "$status_in_progress" ]; then
+      task_just_created_line=$(printf ' ⚠️ TASK %s JUST CREATED THIS TURN (status=%s, COY-180 — opening transition). If work on this task is starting now (the typical case), in THIS response call `%s` with slug=%s, status=%s BEFORE the first Read/Grep/Edit on the codebase. The board misrepresents project state while a task you'\''re actively working on shows as %s. Skip this nudge only if the task was created for someone else / a future session.' "$t_slug" "$t_status" "$task_update_label" "$t_slug" "$status_in_progress" "$t_status")
     fi
   fi
   # COY-156 + COY-180: if a worklog was just recorded this turn (PostToolUse
@@ -206,12 +230,23 @@ else
   #       fix from COY-161 that the md guidance alone couldn't enforce.
   # Consume the marker on read so the reminders fire once per worklog.
   worklog_just_recorded_line=""
+  started_line=""
   if [ -f "$LANE/worklog-recorded" ]; then
-    read -r _ _ w_slug < "$LANE/worklog-recorded" || true
+    read -r _ _ w_slug w_started < "$LANE/worklog-recorded" || true
     rm -f "$LANE/worklog-recorded"
     slug_phrase="the linked task and its parent issue"
     [ -n "${w_slug:-}" ] && slug_phrase=$(printf 'task `%s` and its parent issue' "$w_slug")
-    worklog_just_recorded_line=$(printf ' ⚠️ WORKLOG JUST RECORDED THIS TURN (COY-156 + COY-180). Two checks, BOTH in THIS response:\n  (1) Status close-out bundle (COY-180): if this worklog wrapped the scope of a PR merge / feature shipped / requirement delivered, the SAME response must ALSO propose marking %s `complete` via `coyote_update_task` + `coyote_update_issue`. Worklog-only offer at a scope-closing moment is THE close-out bug — propose the status changes NOW; do not push them to a future turn.\n  (2) Session close (COY-156): if this was the closing worklog for the session'\''s meaningful work, DO NOT just give a recap and pause — proactively ask "Wrap and stop the timer?". If the human has already signalled wind-down, you may emit `🛑 Session closed.` + `🕐 HH:MM:SS` + the `/clear`-or-`/exit` instruction directly (see CLAUDE-COYOTE-HUMAN.md §5/§6). If this is a mid-session transition worklog (multi-task day), say so explicitly and continue — but ask, do not assume.' "$slug_phrase")
+    # COY-403: start-side mirror of the COY-183 close-out gate. A worklog just
+    # landed for a task that was never flipped to the in-progress status in
+    # this session — so the board showed the work as not started for its whole
+    # duration. SOFT nudge, never a block: the task may legitimately have been
+    # flipped in an earlier session (multi-day work), which the lane cannot
+    # see. The blocking gate stays on the close-out side, where the signal is
+    # unambiguous.
+    if [ "${w_started:-}" = "never-started" ] && [ -n "${w_slug:-}" ]; then
+      started_line=$(printf ' ⚠️ START-SIDE STATUS GAP (COY-403): task `%s` got a worklog this session but was never set `%s` here — the board showed it as not started while the work was in flight. If the flip happened in an earlier session, ignore this. Otherwise state it in THIS response, and from now on call `%s` with status=%s the instant work starts, before the first read or edit.' "$w_slug" "$status_in_progress" "$task_update_label" "$status_in_progress")
+    fi
+    worklog_just_recorded_line=$(printf ' ⚠️ WORKLOG JUST RECORDED THIS TURN (COY-156 + COY-180). Two checks, BOTH in THIS response:\n  (1) Status close-out bundle (COY-180): if this worklog wrapped the scope of a PR merge / feature shipped / requirement delivered, the SAME response must ALSO propose marking %s `%s` via `%s` + `%s`. Worklog-only offer at a scope-closing moment is THE close-out bug — propose the status changes NOW; do not push them to a future turn.\n  (2) Session close (COY-156): if this was the closing worklog for the session'\''s meaningful work, DO NOT just give a recap and pause — proactively ask "Wrap and stop the timer?". If the human has already signalled wind-down, you may emit `🛑 Session closed.` + `🕐 HH:MM:SS` + the `/clear`-or-`/exit` instruction directly (see the coyote-worklog skill, "Closing the session"). If this is a mid-session transition worklog (multi-task day), say so explicitly and continue — but ask, do not assume.' "$slug_phrase" "$status_closed_primary" "$task_update_label" "$issue_update_label")
   fi
   # Inject canonical split so the model has fresh, mechanical numbers when
   # proposing a worklog offer — never derive them by inspection (COY-133).
@@ -240,7 +275,7 @@ else
   if [ "$wind_down" = "1" ]; then
     wind_down_line=$(printf ' ⚠️ WIND-DOWN DETECTED in the last user message. If the closing worklog has been recorded, EMIT `🛑 Session closed.` THIS TURN — place it on its own line (no list prefix, no surrounding quotes, no trailing text — line-anchored regex `^🛑 Session closed\\.[[:space:]]*$`), followed by a `🕐 HH:MM:SS` line. THEN in the same response strongly urge the user to run `/clear` (preferred) or `/exit` before any further work — without it, the session goes untracked. If the closing worklog is NOT yet recorded, ask "Wrap and stop the timer?" now and log first. Do not just say goodbye — the marker is the trigger that stops the timer.')
   fi
-  printf '[ai-end %s] End-of-turn check: if meaningful work was done, was a Coyote worklog recorded? If not, offer to log before closing. Verify task slug, human/AI split, phase, activity_id.%s%s%s%s%s' "$ts" "$split_line" "$warn_line" "$task_just_created_line" "$worklog_just_recorded_line" "$wind_down_line"
+  printf '[ai-end %s] End-of-turn check: if meaningful work was done, was a worklog recorded? If not, offer to log before closing. Verify task slug, human/AI split, phase, activity_id.%s%s%s%s%s%s' "$ts" "$split_line" "$warn_line" "$task_just_created_line" "$worklog_just_recorded_line" "$started_line" "$wind_down_line"
 fi
 
 # Sweep abandoned peer lanes on every Stop. Without this, lanes from sessions

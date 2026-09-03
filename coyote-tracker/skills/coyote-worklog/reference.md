@@ -25,7 +25,27 @@ You are an AI assistant closely collaborating with a human engineer. Together, y
 3. **The human is the source of truth for time.** You can observe what was done, but only the human knows how long they actually spent. Always confirm time with them.
 4. **Human/AI split matters.** Coyote tracks `time_human_seconds` and `time_ai_seconds` separately. Recording this split accurately is important for project analytics and cost modeling.
 5. **Tasks must exist before work begins.** Never start work without a corresponding Coyote task. If no task exists, create one first. Do not start work and reconstruct the task afterward — this leads to forgotten logs and inaccurate timestamps.
-6. **Status reflects state — bracket every unit of work with two MCP calls.** The moment work begins on a task, call `coyote_update_task` to set `status = "in_progress"`. When the human names an **issue** slug as the thing to work on (「COY-449やって」/ "let's do COY-449"), call `coyote_update_issue` to set that issue `in_progress` too — the issue is the unit the board is scanned by, so it must not sit at `not_started` while its work is in flight. The moment the worklog wraps the scope (PR merged, requirement delivered, fix verified), the **same response that proposes the worklog** must also propose marking the task and parent issue `complete`. These are not two separate offers — they are one bundled action. Silently leaving items at `in_progress` after the work is done is the single most common audit failure; treat it as a bug, not an oversight.
+6. **Status reflects state — bracket every unit of work with two status-update calls.** The moment work begins on a task, call the configured **task update tool** to set it to the **in-progress status**. When the human names an **issue** slug as the thing to work on (「COY-449やって」/ "let's do COY-449"), call the configured **issue update tool** to set that issue in-progress too — the issue is the unit the board is scanned by, so it must not sit at the not-started status while its work is in flight. The concrete tool names and status strings come from `.claude/coyote-tracker.config` (`task_update_tool` / `issue_update_tool` / `status_in_progress` / `status_closed`) and are tabulated in this project's `docs/<key>-worklog-config.md`; on the default backend they are `coyote_update_task` / `coyote_update_issue` with `in_progress` / `complete`. The moment the worklog wraps the scope (PR merged, requirement delivered, fix verified), the **same response that proposes the worklog** must also propose marking the task and parent issue `complete`. These are not two separate offers — they are one bundled action. Silently leaving items at `in_progress` after the work is done is the single most common audit failure; treat it as a bug, not an oversight.
+
+---
+
+## Backend Configuration (`.claude/coyote-tracker.config`)
+
+The Tracker mechanism is backend-agnostic: every identifier that names a particular tracker lives in this one file, and every default is Coyote MCP's value. A consumer that never writes the file behaves exactly as the Coyote deployment does; a consumer on another backend overrides only the keys that differ. Nothing in the hooks or in this skill is hardcoded to a specific tracker or a specific customer's deployment.
+
+| Key | Default | Used by |
+|---|---|---|
+| `backend_tool` | `mcp__coyote__coyote_create_worklog` | pre/post-worklog hooks — split injection, `worklog-recorded`, the COY-183 gate's left-hand side |
+| `task_create_tool` | `mcp__coyote__coyote_create_task` | post-worklog hook — `task-just-created` (COY-180 opening nudge) |
+| `task_update_tool` | `mcp__coyote__coyote_update_task` | post-worklog hook — `tasks-started-this-session` / `tasks-closed-this-session`; **named verbatim in every Stop-hook reminder** |
+| `issue_update_tool` | `mcp__coyote__coyote_update_issue` | post-worklog hook — `issues-closed-this-session`; named in the COY-390 issue nudge |
+| `task_slug_pattern` | `[A-Z][A-Z0-9]+-T[0-9]+` | post-worklog hook — extracts the server-generated task slug from the create response |
+| `status_not_started` | `not_started` | default assumed for a create call that omits status |
+| `status_in_progress` | `in_progress` | the opening transition; the start-side nudge keys off it |
+| `status_closed` | `complete,cancelled` | comma-separated set; the COY-183 close-out gate keys off it |
+| `worklog_config_doc` | — | pointer to this project's category/phase/activity doc |
+
+**Why this matters for the model (COY-403).** The reminders the hooks inject name the *configured* tool. If a reminder names a tool this project does not have, the config is wrong — say so instead of silently skipping the transition. And if you are unsure which call sets a status here, the answer is in the status-transition table at the top of `docs/<key>-worklog-config.md`, not in your memory of another project.
 
 ---
 
@@ -41,8 +61,8 @@ State is per-session — each Claude Code session gets its own **lane** at `${CL
 - **`UserPromptSubmit` hook:** prepends every user turn with `[turn-ts HH:MM:SS <epoch> | session <sid_8> | elapsed HH:MM:SS]`. The 8-char session prefix is the arg you pass to `worklog-split.sh` and `timer-stop.sh`. Claude reads these markers directly — no `date` command needed. Also pattern-matches the prompt for wind-down phrasing (e.g., "wrap up", "good for today", "終わり"); when detected, the prepend includes a ⚠️ note instructing Claude to plan the close marker in the response. When `timer-start` is missing (most often because `🛑 Session closed.` was emitted earlier and the session continued without `/clear` or `/exit`), the prepend carries a loud reminder to tell the user to run `/clear` or `/exit` before further work.
 - **Statusline** (`statusline.sh`): reads the calling session's lane timer file and displays live elapsed time (`TIMER M:SS` or `H:MM:SS`) in the human's status bar. Each terminal sees only its own session's TIMER.
 - **`PostToolUse` hook on Coyote tools** (`post-worklog-hook.sh`, COY-156 / COY-180): drops one-shot lane markers that the `Stop` hook consumes to nudge about the two status transitions that bracket every unit of work.
-  - `coyote_create_task` → `<lane>/task-just-created` carrying the new task slug + status. The Stop hook surfaces "flip `<slug>` to `in_progress` NOW" unless the task was already created with `status: "in_progress"` (the happy path). Fixes the **opening transition** failure mode where the task sits at `todo`/`not_started` while work is in flight.
-  - `coyote_create_worklog` → `<lane>/worklog-recorded` carrying the worklog's `task_slug`. The Stop hook then surfaces two checks for the SAME response: (1) bundled close-out — did this response also propose marking `<task_slug>` + parent issue `complete`? (2) session close — did this response also offer "Wrap and stop?". Fixes the **closing transition** failure mode where the worklog lands but the task/issue remains `in_progress`.
+  - the configured `task_create_tool` → `<lane>/task-just-created` carrying the new task slug + status. The Stop hook surfaces "flip `<slug>` to the in-progress status NOW", naming the configured `task_update_tool`, unless the task was already created in-progress (the happy path). Fixes the **opening transition** failure mode where the task sits at `todo`/`not_started` while work is in flight.
+  - the configured `backend_tool` → `<lane>/worklog-recorded` carrying the worklog's `task_slug` and whether that task was ever flipped in-progress this session. The Stop hook then surfaces up to three checks for the SAME response: (1) bundled close-out — did this response also propose marking `<task_slug>` + parent issue closed? (2) session close — did this response also offer "Wrap and stop?" (3) COY-403 start-side gap — was this task worklog'd without ever being flipped in-progress here? Fixes the **closing transition** failure mode where the worklog lands but the task/issue remains `in_progress`.
 - **`Stop` hook** (fires at the end of every AI turn): emits a reminder to check whether the session's work has been logged and to verify task slug, Human/AI split, phase, and activity. Reads & consumes the COY-156 / COY-180 markers above; reads `worklog-split.sh` canonical to inject fresh, mechanical split numbers. Also re-scans the last user message for wind-down phrasing as a safety net — when detected, the reminder explicitly tells Claude to emit `🛑 Session closed.` this turn (with placement rules) and to instruct the user to run `/clear` or `/exit` afterward. On `🛑 Session closed.`, it `rm -rf`s the calling lane only — concurrent sessions are unaffected — and emits a follow-up reminder telling Claude to relay the `/clear`-or-`/exit` instruction to the user prominently.
 
 ### Clock display protocol (Claude's side)
@@ -94,8 +114,9 @@ The Stop hook gates the session-close marker on **pending task close-outs**. COY
 
 **Mechanism.** The PostToolUse hook (`post-worklog-hook.sh`) maintains two append-only lane files:
 
-- `<lane>/worklogs-this-session` — task slug per `coyote_create_worklog` call.
-- `<lane>/tasks-closed-this-session` — task slug per `coyote_update_task` call with `status` in `{complete, cancelled}` (plus `coyote_create_task` calls that create the task already complete/cancelled).
+- `<lane>/worklogs-this-session` — task slug per worklog call on the configured `backend_tool`.
+- `<lane>/tasks-closed-this-session` — task slug per `task_update_tool` call with `status` in `status_closed` (plus `task_create_tool` calls that create the task already closed).
+- `<lane>/tasks-started-this-session` — task slug per `task_update_tool` call with `status` = `status_in_progress` (plus tasks created directly in-progress). Feeds the COY-403 **start-side nudge**: when a worklog lands for a task whose slug never reached this file, the Stop hook says so. That one is a soft nudge, never a block — the flip may legitimately have happened in an earlier session, which the lane cannot see.
 
 When the Stop hook detects `🛑 Session closed.`, it diffs the two files. Every slug in `worklogs-this-session` but NOT in `tasks-closed-this-session` is **pending**. If any pending slug exists **and** `<lane>/carry-over-ack` is absent, the hook:
 
@@ -105,7 +126,7 @@ When the Stop hook detects `🛑 Session closed.`, it diffs the two files. Every
 
 **What to do when the gate fires.** Two paths:
 
-(a) **Close the pending tasks now (the typical case).** Propose marking each pending task `complete` via `coyote_update_task` — and the parent issue via `coyote_update_issue` when the worklog wraps the full issue scope. After the user confirms and the MCP calls fire (the PostToolUse hook will then append the slugs to `tasks-closed-this-session`), re-emit `🛑 Session closed.`. The diff is now empty, the gate releases, the lane is removed.
+(a) **Close the pending tasks now (the typical case).** Propose marking each pending task closed via the configured task update tool — and the parent issue via the issue update tool when the worklog wraps the full issue scope. The gate message names both tools explicitly; use the names it prints. After the user confirms and the MCP calls fire (the PostToolUse hook will then append the slugs to `tasks-closed-this-session`), re-emit `🛑 Session closed.`. The diff is now empty, the gate releases, the lane is removed.
 
 (b) **Carry the work to a future session (multi-day task, mid-day transition log, backfill for a previously closed task).** Run the escape hatch:
 
@@ -279,12 +300,12 @@ If you also need adjacent info — raw `timer-start`, current wall-clock, an `ls
 
 ### 1. Mark the Task (and the Named Issue) `in_progress` the Moment Work Begins
 
-The same turn in which the task is identified or created, call `coyote_update_task` with `status: "in_progress"`. Do **not** wait until "real" work starts, do **not** batch this with other updates, do **not** assume the human will notice the task is still `todo`. The transition is part of starting work, not a separate housekeeping step.
+The same turn in which the task is identified or created, call the configured task update tool with the in-progress status (`task_update_tool` / `status_in_progress` in `.claude/coyote-tracker.config`; the named table lives in this project's `docs/<key>-worklog-config.md`). Do **not** wait until "real" work starts, do **not** batch this with other updates, do **not** assume the human will notice the task is still `todo`. The transition is part of starting work, not a separate housekeeping step.
 
 **When this fires:**
 - A new task was just created for the work about to begin → flip to `in_progress` in the next tool call.
 - The human pointed at an existing task and said "let's work on this" / 「これやろう」→ flip to `in_progress` before the first code change, file read, or investigation step.
-- **The human named an issue slug as the work target** — "let's do COY-449" / 「COY-449やって」→ call `coyote_update_issue` with `status: "in_progress"` on **that issue**, in the same turn, before the first read or edit. Then create or pick the task under it and flip that too. Both transitions, not one: the issue is what the board is scanned by, and an explicitly requested issue left at `not_started` is the same misreporting failure as a `todo` task in flight.
+- **The human named an issue slug as the work target** — "let's do COY-449" / 「COY-449やって」→ call the configured issue update tool with the in-progress status on **that issue**, in the same turn, before the first read or edit. Then create or pick the task under it and flip that too. Both transitions, not one: the issue is what the board is scanned by, and an explicitly requested issue left at `not_started` is the same misreporting failure as a `todo` task in flight.
 - You catch yourself mid-work on a task still showing `todo` (or under an issue still showing `not_started`) → flip it immediately and continue; do not silently leave it.
 
 **Why this matters:** the status field is what the human (and other team members) scan to know what's actually in flight. A task left at `todo` — or a named issue left at `not_started` — while work is happening misrepresents project state to everyone looking at the board.
@@ -461,7 +482,7 @@ Before the conversation ends, if any work was performed, run through this mental
 - [ ] Are the descriptions detailed enough that someone reading them next month would understand what was done?
 - [ ] Is each worklog associated with the correct task?
 - [ ] If the work is incomplete, does the description mention what remains?
-- [ ] **If a PR merged this session, is the linked task and parent issue marked `complete` in Coyote?** Use `coyote_update_task` / `coyote_update_issue`. PR merge does **not** auto-close Coyote items — close them explicitly. This MUST have been proposed in the same message as the worklog offer, not as a follow-up turn.
+- [ ] **If a PR merged this session, is the linked task and parent issue marked closed?** Use the configured task/issue update tools. A PR merge does **not** auto-close tracker items — close them explicitly. This MUST have been proposed in the same message as the worklog offer, not as a follow-up turn.
 - [ ] **If a requirement is delivered, is its tracking issue + tasks marked `complete`?**
 - [ ] **Audit: are any tasks/issues from this session still `in_progress` despite the worklog wrapping their scope?** If yes, close them now — do not push it to a future session. The COY-183 gate will catch task-level gaps automatically and block the close marker, but issue-level gaps still require manual audit (the gate diffs tasks only).
 - [ ] **Has the timer been stopped?** Emit `🛑 Session closed.` on its own line — the Stop hook removes `timer-start` after the COY-183 close-out gate passes. Include a `🕐 HH:MM:SS` stop-clock line in the same response, and tell the user to run `/clear` (preferred) or `/exit` before any further work — the marker leaves the session untracked.
@@ -473,12 +494,12 @@ If any of these are not satisfied, prompt the human before closing out.
 
 Status transitions bracket every unit of work. The opening transition is just as important as the closing one — and it is the one Claude most often forgets, because it happens *before* anything visible has been done.
 
-**The rule:** the very next tool call after a task is identified or created for the work about to start is `coyote_update_task` with `status: "in_progress"`. Not "after I read the relevant files". Not "after the human confirms the scope". The instant the task is known. The same rule applies one level up: when the human names an **issue** slug as the work target, `coyote_update_issue status="in_progress"` on it is part of that same opening move.
+**The rule:** the very next tool call after a task is identified or created for the work about to start is the configured task update call setting the in-progress status. Not "after I read the relevant files". Not "after the human confirms the scope". The instant the task is known. The same rule applies one level up: when the human names an **issue** slug as the work target, the issue update call setting it in-progress is part of that same opening move.
 
 **Concrete trigger points:**
-- You just called `coyote_create_task` → next call flips it `in_progress`.
+- You just created a task → the next call flips it in-progress.
 - The human says "let's work on COY-T142" / 「COY-T142やろう」 → fetch it if needed, then immediately flip `in_progress`.
-- The human says "let's work on COY-449" / 「COY-449やって」 — an **issue** slug, not a task slug → flip **the issue** `in_progress` with `coyote_update_issue` right away, then do the task-level flip under it. Do not defer the issue flip to the close-out; by then it never happens.
+- The human says "let's work on COY-449" / 「COY-449やって」 — an **issue** slug, not a task slug → flip **the issue** in-progress with the issue update call right away, then do the task-level flip under it. Do not defer the issue flip to the close-out; by then it never happens.
 - You start an investigation that maps to an existing task → flip `in_progress` before the first `Read`/`Grep` on the codebase.
 
 If you discover mid-session that you skipped the opening transition, flip it now and note the lapse in the worklog description ("status was left at `todo` until mid-session — corrected at HH:MM").
@@ -517,12 +538,12 @@ Don't wait until the next session's audit to catch them. Close at the moment the
 | Logging to the wrong task | Distorts per-task metrics and confuses project managers | Confirm the task slug |
 | One giant worklog for a full day | Impossible to analyze which tasks took how long | Split by task and activity |
 | Leaving phase/activity blank | Breaks per-phase and per-activity analytics | Always set phase on tasks and activity on both tasks and worklogs |
-| **Working on a task that's still `todo`** | The board misrepresents project state to everyone scanning it; humans cannot tell what's actually in flight | The instant the task is identified or created, call `coyote_update_task` with `status: "in_progress"` — before reading code, before drafting an approach |
-| **Working on an issue the human named while it's still `not_started`** | Same misreporting one level up, and worse: the issue is the unit the board and the timeline are scanned by, so an explicitly requested issue reads as untouched all session | When the human points at an issue slug, `coyote_update_issue` with `status: "in_progress"` in the same turn as the task flip — before the first read or edit |
+| **Working on a task that's still not started** | The board misrepresents project state to everyone scanning it; humans cannot tell what's actually in flight | The instant the task is identified or created, call the configured task update tool with the in-progress status — before reading code, before drafting an approach |
+| **Working on an issue the human named while it's still `not_started`** | Same misreporting one level up, and worse: the issue is the unit the board and the timeline are scanned by, so an explicitly requested issue reads as untouched all session | When the human points at an issue slug, call the issue update tool with the in-progress status in the same turn as the task flip — before the first read or edit |
 | Leaving the timer running without recording the closing worklog | The lane lingers until 24h `last-active` sweep — prior session's elapsed and split data is silently discarded then | Record the closing worklog and emit `🛑 Session closed.` before `/exit`; otherwise the work is lost |
 | **Logging the worklog but forgetting to close the linked task/issue** | The most common audit failure — items pile up at `in_progress` with completed worklogs underneath, and the next session's audit has to reverse-engineer what was done | Treat the close-out as **part of the worklog action**, not a separate offer. Every worklog proposal for a scope-closing event must in the same message also propose the task/issue transitions to `complete`. COY-183 gates the session-close marker on this — silent close-outs no longer end the session |
 | Sending a worklog offer at a scope-closing moment without the bundled close proposal | Pushes the close onto the human's memory; they will not remember | Before sending any worklog offer, run the four-question checklist in §5 and revise if any answer is N |
-| Trying to re-emit `🛑 Session closed.` after the COY-183 gate fired without acting on the gate message | Each re-emission triggers the gate again; lane lingers, statusline still ticks, audit gap persists | Either propose the pending task closes (`coyote_update_task` status=complete + parent issue), or run `.claude/bin/carry-over-ack.sh <sid_8> "<reason>"` — *then* re-emit the marker |
+| Trying to re-emit `🛑 Session closed.` after the COY-183 gate fired without acting on the gate message | Each re-emission triggers the gate again; lane lingers, statusline still ticks, audit gap persists | Either propose the pending task closes (the configured task update tool + parent issue; the gate message names them), or run `.claude/bin/carry-over-ack.sh <sid_8> "<reason>"` — *then* re-emit the marker |
 | Combining timings from two concurrent sessions into one worklog | Each lane has its own canonical split — mixing them produces values that fail the PreToolUse validator and misrepresent who did what | Log each session separately, or explicitly confirm the merge with the human and use the `worklog-split-override` one-shot bypass |
 | Reusing a stale `<sid_8>` from earlier in the transcript when invoking `worklog-split.sh` | If the human switched sessions, the prefix may resolve to a different (or already-removed) lane → wrong split or `exit 1` | Always lift `<sid_8>` from the most recent `[turn-ts]` prepend in the current turn |
 
@@ -586,4 +607,4 @@ Wrapping up. Emitting the close marker now:
 ⚠️  This session is now untracked. Please run `/clear` (preferred — keeps the terminal, mints a fresh tracked session) or `/exit` and reopen before any further work in this terminal. Without it, no time-tracking will be captured on the next chunk.
 ```
 
-Claude only calls `coyote_create_worklog` after the human confirms — and on the same confirmation also fires the bundled `coyote_update_task` / `coyote_update_issue` calls for scope-closing moments. Logging without closing is the bug we are trying to prevent; treat the three as one atomic step. Once logged and closed, if this was the closing worklog for a meaningful unit of work, proactively ask "Wrap the session and stop the timer?" — and on confirmation, emit `🛑 Session closed.` on its own line, a `🕐 HH:MM:SS` stop line, **and the explicit `/clear`-or-`/exit` instruction** all in the same response. The Stop hook removes `timer-start` on the marker, but it cannot type the warning for the human — that is on Claude.
+Claude only writes the worklog after the human confirms — and on the same confirmation also fires the bundled task/issue status-update calls for scope-closing moments. Logging without closing is the bug we are trying to prevent; treat the three as one atomic step. Once logged and closed, if this was the closing worklog for a meaningful unit of work, proactively ask "Wrap the session and stop the timer?" — and on confirmation, emit `🛑 Session closed.` on its own line, a `🕐 HH:MM:SS` stop line, **and the explicit `/clear`-or-`/exit` instruction** all in the same response. The Stop hook removes `timer-start` on the marker, but it cannot type the warning for the human — that is on Claude.

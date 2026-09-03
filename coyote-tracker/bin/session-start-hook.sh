@@ -56,7 +56,7 @@ case "$src" in
     date +%s > "$LANE/timer-start"
     : > "$LANE/turn-log"
     CLAUDE_SWEEP_SKIP_SID="$sid" "$BIN_DIR/sweep-stale-lanes.sh" >/dev/null 2>&1 || true
-    echo 'Coyote Tracker: timer (re)started on /clear (see statusline). Create Coyote task BEFORE work. Offer to log at natural breakpoints. Lead your FIRST response with 🕐 HH:MM:SS to confirm the timer. See CLAUDE-COYOTE-HUMAN.md.'
+    echo 'Coyote Tracker: timer (re)started on /clear (see statusline). Create Coyote task BEFORE work. Offer to log at natural breakpoints. Lead your FIRST response with 🕐 HH:MM:SS to confirm the timer. See the coyote-worklog skill.'
     ;;
   startup)
     # A `startup` event can re-fire for a session that is already live — e.g. a
@@ -76,7 +76,7 @@ case "$src" in
     else
       date +%s > "$LANE/timer-start"
       : > "$LANE/turn-log"
-      echo 'Coyote Tracker: timer auto-started (see statusline). Create Coyote task BEFORE work. Offer to log at natural breakpoints. Lead your FIRST response of this session with 🕐 HH:MM:SS to confirm the timer — skip the clock on subsequent turns. See CLAUDE-COYOTE-HUMAN.md.'
+      echo 'Coyote Tracker: timer auto-started (see statusline). Create Coyote task BEFORE work. Offer to log at natural breakpoints. Lead your FIRST response of this session with 🕐 HH:MM:SS to confirm the timer — skip the clock on subsequent turns. See the coyote-worklog skill.'
     fi
     CLAUDE_SWEEP_SKIP_SID="$sid" "$BIN_DIR/sweep-stale-lanes.sh" >/dev/null 2>&1 || true
     ;;
@@ -97,7 +97,7 @@ case "$src" in
     ;;
   *)
     # Unknown source — be conservative. Don't touch state, just emit minimal reminder.
-    echo "Coyote Tracker: SessionStart with unknown source '$src' — state untouched. See CLAUDE-COYOTE-HUMAN.md."
+    echo "Coyote Tracker: SessionStart with unknown source '$src' — state untouched. See the coyote-worklog skill."
     ;;
 esac
 

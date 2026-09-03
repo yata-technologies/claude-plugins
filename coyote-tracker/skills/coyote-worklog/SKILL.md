@@ -23,13 +23,23 @@ full mechanism (multi-session lanes, split math, timelines, pitfalls), read
 3. **Task before work.** Never start work without a Coyote task — create one first, don't
    reconstruct it afterward.
 4. **Bracket every unit of work with two status transitions.** The instant work starts →
-   `coyote_update_task status=in_progress`. When the human names an **issue** slug as the
-   thing to work on ("let's do COY-449" / 「COY-449やって」) → also
-   `coyote_update_issue status=in_progress` on that issue, in the same turn, before the
-   first read or edit. The moment a worklog wraps the scope (PR merged, requirement
-   delivered, fix verified) → the **same response** that proposes the worklog also proposes
-   marking the task and parent issue `complete`. One bundled action, never two. Silent
-   `in_progress` left after completion is the most common audit failure.
+   set the task to the **in-progress status**. When the human names an **issue** slug as
+   the thing to work on ("let's do COY-449" / 「COY-449やって」) → set **that issue**
+   in-progress too, in the same turn, before the first read or edit. The moment a worklog
+   wraps the scope (PR merged, requirement delivered, fix verified) → the **same response**
+   that proposes the worklog also proposes marking the task and parent issue **closed**.
+   One bundled action, never two. Silent in-progress left after completion is the most
+   common audit failure.
+
+   **Which call to make** is per-consumer, not per-model-memory: the concrete tool names
+   and status strings are `task_update_tool` / `issue_update_tool` / `status_in_progress` /
+   `status_closed` in `.claude/coyote-tracker.config`, and are written out as a named table
+   in this project's `docs/<key>-worklog-config.md` (scaffolded by `/coyote-tracker:init`).
+   Read that table, then make **that** call. On the default backend (Coyote MCP) these are
+   `coyote_update_task` / `coyote_update_issue` with `in_progress` and `complete`. The
+   Tracker hooks name the configured tool back to you in their reminders, so if a reminder
+   names a tool this project does not have, the config is wrong — say so rather than
+   skipping the transition.
 
 ## The split (BLOCKING — never derive it yourself)
 
@@ -74,14 +84,18 @@ untracked.
 
 **Close-out gate (COY-183):** if a worklog was logged this session for a task not marked
 complete/cancelled, the Stop hook BLOCKS the close and keeps the timer running. Either
-propose the pending closes (`coyote_update_task` + parent `coyote_update_issue`) and
-re-emit the marker, or for genuine multi-session work run
+propose the pending closes (the configured task + parent issue update calls; the gate
+message names them) and re-emit the marker, or for genuine multi-session work run
 `.claude/bin/carry-over-ack.sh <sid_8> "<reason>"` then re-emit.
 
 ## Backend
 
-Worklog writes default to Coyote MCP (`mcp__coyote__coyote_create_worklog`). A consumer on
-another backend sets `backend_tool` in `.claude/coyote-tracker.config`.
+Every backend-specific identifier lives in `.claude/coyote-tracker.config`, and every
+default there is Coyote MCP's value — nothing is hardcoded to one tracker. Worklog writes
+go to `backend_tool` (default `mcp__coyote__coyote_create_worklog`); the status
+transitions in principle #4 go to `task_create_tool` / `task_update_tool` /
+`issue_update_tool` with the `status_not_started` / `status_in_progress` / `status_closed`
+vocabulary. A consumer on another backend overrides only the keys that differ.
 
 > Script paths above use `.claude/bin/<script>.sh` — under the plugin edition these are
 > thin consumer-repo wrappers that delegate to `${CLAUDE_PLUGIN_ROOT}/bin/<script>.sh`

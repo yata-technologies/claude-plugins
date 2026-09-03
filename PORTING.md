@@ -24,7 +24,12 @@ enable-ready** until the plugin-mode smoke tests (§6) land against a real insta
       `backend_tool` from `${CLAUDE_PROJECT_DIR}/.claude/coyote-tracker.config` (default
       `mcp__coyote__coyote_create_worklog`) and self-filter — pre-hook validates only the
       configured backend; post-hook drops `worklog-recorded` for the backend while keeping
-      the Coyote task/issue lifecycle markers (COY-183 close-out gate) bound to Coyote MCP.
+      the task/issue lifecycle markers (COY-183 close-out gate) bound to Coyote MCP.
+      **Superseded in 0.6.0 (COY-403):** the lifecycle markers are configurable too —
+      `task_create_tool` / `task_update_tool` / `issue_update_tool` / `task_slug_pattern`
+      and the `status_*` vocabulary, all read through `bin/tracker-config.sh`, all
+      defaulting to today's Coyote MCP values. The hook reminders name the *configured*
+      tool, so the start-side flip is executable on any backend.
       **Known limitation:** only the tool-name gate is configurable — the pre-hook's split /
       start_time validation still reads Coyote MCP `tool_input` field names
       (`seconds`/`time_ai_seconds`/`time_human_seconds`/`start_time`). A non-Coyote backend

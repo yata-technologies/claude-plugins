@@ -1,26 +1,35 @@
 #!/bin/bash
-# PostToolUse hook for Coyote MCP tools (COY-156 / COY-180 / COY-183).
+# PostToolUse hook for tracker-relevant tool calls (COY-156 / COY-180 / COY-183 / COY-403).
 #
-# Drops session-lane markers after specific Coyote tool calls so the Stop
-# hook can surface mechanical, end-of-turn reminders for the two transitions
-# that bracket every unit of work, and so the COY-183 close-out gate can
-# verify that every worklog'd task was also closed before the session ends.
+# Drops session-lane markers after specific tool calls so the Stop hook can
+# surface mechanical, end-of-turn reminders for the two transitions that
+# bracket every unit of work, and so the COY-183 close-out gate can verify
+# that every worklog'd task was also closed before the session ends.
 #
-#   1. coyote_create_task   → LANE/task-just-created (opening transition,
+#   1. <task_create_tool>   → LANE/task-just-created (opening transition,
 #      COY-180). Stop hook nudges: "you just created <slug> — flip to
 #      in_progress NOW before reading code".
-#   2. coyote_create_worklog → LANE/worklog-recorded (closing transition,
+#   2. <backend_tool>       → LANE/worklog-recorded (closing transition,
 #      COY-156 + COY-180). Stop hook already nudges "Wrap and stop?"; with
 #      task_slug captured here it now also nudges "did the same response
 #      also propose marking <slug> + parent issue complete?". Also appends
 #      task_slug to LANE/worklogs-this-session for the COY-183 gate.
-#   3. coyote_update_task with status in {complete, cancelled}
+#   3. <task_update_tool> with status in <status_closed>
 #      → appends slug to LANE/tasks-closed-this-session. The Stop hook's
 #      COY-183 gate diffs worklogs-this-session against this to detect
 #      pending close-outs at session-close time.
-#   4. coyote_update_issue with status in {complete, cancelled}
+#   4. <task_update_tool> (or a create) with status = <status_in_progress>
+#      → appends slug to LANE/tasks-started-this-session (COY-403). The Stop
+#      hook uses it for the start-side mirror of the close-out gate: a worklog
+#      written for a task that was never flipped in_progress this session.
+#   5. <issue_update_tool> with status in <status_closed>
 #      → appends slug to LANE/issues-closed-this-session (informational
 #      for now; reserved for future gate extensions).
+#
+# Every tool name, the task-slug shape, and the status vocabulary come from
+# .claude/coyote-tracker.config (COY-403) — nothing backend-specific is
+# hardcoded here. The defaults are Coyote MCP's values, so a consumer without
+# a config file behaves exactly as before.
 #
 # Failure-mode tolerance: markers are dropped even if the tool itself
 # returned an error, because the call still went through the MCP transport.
@@ -29,17 +38,32 @@
 set -uo pipefail
 
 DIR="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}/.claude"
+# State ($DIR/sessions) stays anchored to the consumer repo; sibling scripts
+# resolve from the plugin install dir under the plugin edition (COY-342),
+# falling back to $DIR/bin for the legacy copy-edition layout.
+BIN_DIR="${CLAUDE_PLUGIN_ROOT:-$DIR}/bin"
 
-# Worklog backend is configurable (COY-342 / COY-T480). The hook matcher is now
-# broad (mcp__.*); this script self-filters. The worklog-recorded marker fires
-# for the configured backend_tool, while the task/issue lifecycle markers stay
-# bound to the Coyote MCP tools that drive the close-out gate.
-CONFIG="$DIR/coyote-tracker.config"
-backend_tool="mcp__coyote__coyote_create_worklog"
-if [ -f "$CONFIG" ]; then
-  cfg_val=$(sed -nE 's/^[[:space:]]*backend_tool[[:space:]]*=[[:space:]]*([^[:space:]#]+).*/\1/p' "$CONFIG" | tail -1)
-  [ -n "$cfg_val" ] && backend_tool="$cfg_val"
+# Backend identifiers are configurable (COY-342 / COY-T480 / COY-403). The hook
+# matcher is broad (mcp__.*); this script self-filters against the configured
+# tool names.
+TRACKER_CONFIG="$DIR/coyote-tracker.config"
+if [ -r "$BIN_DIR/tracker-config.sh" ]; then
+  . "$BIN_DIR/tracker-config.sh"
+else
+  # Defensive: a partially-installed plugin tree must not break the session.
+  # Fall back to defaults-only lookups rather than emitting garbled reminders.
+  tracker_cfg() { printf '%s' "${2-}"; }
+  tracker_tool_label() { printf '%s' "${1##*__}"; }
+  tracker_status_matches() { case ",${2// /}," in *",$1,"*) return 0;; *) return 1;; esac; }
 fi
+backend_tool=$(tracker_cfg      backend_tool      "mcp__coyote__coyote_create_worklog")
+task_create_tool=$(tracker_cfg  task_create_tool  "mcp__coyote__coyote_create_task")
+task_update_tool=$(tracker_cfg  task_update_tool  "mcp__coyote__coyote_update_task")
+issue_update_tool=$(tracker_cfg issue_update_tool "mcp__coyote__coyote_update_issue")
+task_slug_pattern=$(tracker_cfg task_slug_pattern '[A-Z][A-Z0-9]+-T[0-9]+')
+status_in_progress=$(tracker_cfg status_in_progress "in_progress")
+status_not_started=$(tracker_cfg status_not_started "not_started")
+status_closed=$(tracker_cfg     status_closed     "complete,cancelled")
 
 input=$(cat)
 tool=$(printf '%s' "$input" | jq -r '.tool_name // ""')
@@ -56,21 +80,34 @@ ts=$(date +%H:%M:%S)
 # Worklog-recorded marker fires for the configured backend (default Coyote MCP).
 if [ "$tool" = "$backend_tool" ]; then
   task_slug=$(printf '%s' "$input" | jq -r '.tool_input.task_slug // ""')
-  printf '%s %s %s\n' "$now" "$ts" "$task_slug" > "$LANE/worklog-recorded"
+  # COY-403: record whether this task was ever flipped in_progress in this
+  # session, so the Stop hook can fire the start-side mirror of the COY-183
+  # gate. Resolved here (not at Stop time) because the lane file is appended
+  # to by later turns and we want the state as of the worklog.
+  started="unknown"
+  if [ -n "$task_slug" ]; then
+    if [ -f "$LANE/tasks-started-this-session" ] && \
+       grep -qxF "$task_slug" "$LANE/tasks-started-this-session" 2>/dev/null; then
+      started="started"
+    else
+      started="never-started"
+    fi
+  fi
+  printf '%s %s %s %s\n' "$now" "$ts" "$task_slug" "$started" > "$LANE/worklog-recorded"
   # COY-183: also append the slug to worklogs-this-session so the Stop
   # hook close-out gate can diff against tasks-closed-this-session. Skip
   # when task_slug is empty (defensive — the MCP server requires it).
   [ -n "$task_slug" ] && printf '%s\n' "$task_slug" >> "$LANE/worklogs-this-session"
 fi
 
-# Task/issue lifecycle markers stay bound to Coyote MCP (they drive the
-# COY-183 close-out gate, which is Coyote-specific regardless of backend).
+# Task/issue lifecycle markers. Case patterns are quoted variable expansions,
+# so each arm matches the configured tool name literally.
 case "$tool" in
-  mcp__coyote__coyote_create_task)
+  "$task_create_tool")
     # The new task's slug is generated server-side; pull it from the MCP
     # response. tool_response can be either a string (rare) or an object
     # with a content array of {type: "text", text: "..."} entries — handle
-    # both shapes. Extract the first <KEY>-T<number> token we see.
+    # both shapes. Extract the first token matching task_slug_pattern.
     resp_text=$(printf '%s' "$input" | jq -r '
       .tool_response as $r |
       if   ($r | type) == "string" then $r
@@ -78,46 +115,48 @@ case "$tool" in
         ($r.content | map(select(.type == "text") | .text) | join(" "))
       else ($r | tostring) end
     ' 2>/dev/null || true)
-    slug=$(printf '%s' "$resp_text" | grep -oE '[A-Z][A-Z0-9]+-T[0-9]+' | head -1)
+    slug=$(printf '%s' "$resp_text" | grep -oE "$task_slug_pattern" | head -1)
     [ -n "$slug" ] || exit 0
-    # status default in Coyote is "not_started" when omitted. If the agent
-    # already created the task with status=in_progress (the ideal path),
-    # the Stop reminder noop-nudges; if it's anything else, we nudge.
-    status=$(printf '%s' "$input" | jq -r '.tool_input.status // "not_started"')
+    # Backends default a new task to the not-started status when omitted. If
+    # the agent already created it in_progress (the ideal path), the Stop
+    # reminder noop-nudges; anything else, we nudge.
+    status=$(printf '%s' "$input" | jq -r --arg d "$status_not_started" '.tool_input.status // $d')
     printf '%s %s %s %s\n' "$now" "$ts" "$slug" "$status" > "$LANE/task-just-created"
+    # COY-403: a task created directly in_progress counts as started.
+    [ "$status" = "$status_in_progress" ] && \
+      printf '%s\n' "$slug" >> "$LANE/tasks-started-this-session"
     # COY-183: if the task was created already complete/cancelled (backfill
     # / no-op case), count it as closed for the gate so a paired worklog
     # doesn't trip the gate.
-    case "$status" in
-      complete|cancelled)
-        printf '%s\n' "$slug" >> "$LANE/tasks-closed-this-session"
-        ;;
-    esac
+    tracker_status_matches "$status" "$status_closed" && \
+      printf '%s\n' "$slug" >> "$LANE/tasks-closed-this-session"
     ;;
-  mcp__coyote__coyote_update_task)
+  "$task_update_tool")
     # COY-183: capture task transitions to complete/cancelled — feeds the
     # Stop hook's close-out gate (diffs worklogs-this-session against
-    # tasks-closed-this-session). Slug is taken from tool_input.slug
-    # (required by the MCP schema).
+    # tasks-closed-this-session).
+    # COY-403: capture the opening transition too, into
+    # tasks-started-this-session, for the start-side nudge.
+    # Slug is taken from tool_input.slug (required by the tool schema).
     status=$(printf '%s' "$input" | jq -r '.tool_input.status // ""')
-    case "$status" in
-      complete|cancelled)
-        slug=$(printf '%s' "$input" | jq -r '.tool_input.slug // ""')
-        [ -n "$slug" ] && printf '%s\n' "$slug" >> "$LANE/tasks-closed-this-session"
-        ;;
-    esac
+    slug=$(printf '%s' "$input" | jq -r '.tool_input.slug // ""')
+    if [ -n "$slug" ]; then
+      if [ "$status" = "$status_in_progress" ]; then
+        printf '%s\n' "$slug" >> "$LANE/tasks-started-this-session"
+      elif tracker_status_matches "$status" "$status_closed"; then
+        printf '%s\n' "$slug" >> "$LANE/tasks-closed-this-session"
+      fi
+    fi
     ;;
-  mcp__coyote__coyote_update_issue)
+  "$issue_update_tool")
     # COY-183: capture issue transitions to complete/cancelled. The current
     # gate diffs tasks (the direct linkage from worklog → task); issue
     # closure is recorded for forward-compat with a future per-issue gate.
     status=$(printf '%s' "$input" | jq -r '.tool_input.status // ""')
-    case "$status" in
-      complete|cancelled)
-        slug=$(printf '%s' "$input" | jq -r '.tool_input.slug // ""')
-        [ -n "$slug" ] && printf '%s\n' "$slug" >> "$LANE/issues-closed-this-session"
-        ;;
-    esac
+    if tracker_status_matches "$status" "$status_closed"; then
+      slug=$(printf '%s' "$input" | jq -r '.tool_input.slug // ""')
+      [ -n "$slug" ] && printf '%s\n' "$slug" >> "$LANE/issues-closed-this-session"
+    fi
     ;;
 esac
 

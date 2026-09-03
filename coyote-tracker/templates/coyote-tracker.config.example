@@ -1,10 +1,38 @@
 # Coyote Tracker — per-consumer config (commit this file; it is team-shared).
 # Read at runtime by the Tracker hooks from ${CLAUDE_PROJECT_DIR}/.claude/coyote-tracker.config.
-# The plugin ships the DEFAULT; this file lets a consumer override without editing plugin source.
+# The plugin ships the DEFAULTS below; this file lets a consumer override without
+# editing plugin source. Every backend-specific identifier the hooks need lives
+# here — nothing about a particular tracker is hardcoded in the scripts.
+#
+# Syntax: key=value, one per line. `#` starts a comment. Last assignment wins.
+# Leave a key out to keep its default.
 
-# Worklog backend: the tool name the pre/post-worklog hooks validate against.
+# --- Worklog backend -------------------------------------------------------
+# The tool name the pre/post-worklog hooks validate against.
 # Default backend is Coyote MCP. Change for another backend (e.g. mcp__redmine__create_time_entry).
 backend_tool=mcp__coyote__coyote_create_worklog
 
+# --- Task / issue status transitions (COY-403) -----------------------------
+# The Tracker brackets every unit of work with two status transitions: flip to
+# in-progress the instant work starts, flip to a closed status when the worklog
+# wraps the scope. The hooks name these tools verbatim in their reminders, and
+# the COY-183 close-out gate + COY-403 start-side nudge key off them. Point them
+# at whatever your backend calls these operations; a tool named here that your
+# backend does not have means the reminders name a call the model cannot make.
+task_create_tool=mcp__coyote__coyote_create_task
+task_update_tool=mcp__coyote__coyote_update_task
+issue_update_tool=mcp__coyote__coyote_update_issue
+
+# Regex (ERE) matching a task slug in the create-task response, used to pick up
+# the server-generated slug for the "just created — flip it now" nudge.
+task_slug_pattern=[A-Z][A-Z0-9]+-T[0-9]+
+
+# Status vocabulary. status_closed is a comma-separated set; the others are
+# single values. These are the literal strings your backend's status field takes.
+status_not_started=not_started
+status_in_progress=in_progress
+status_closed=complete,cancelled
+
+# --- Docs ------------------------------------------------------------------
 # Optional pointer to this project's worklog-config doc (category/phase/activity IDs).
 worklog_config_doc=docs/REPLACE-WITH-DATED-DOC.md
