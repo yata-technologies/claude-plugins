@@ -44,7 +44,18 @@ find_target() {
 }
 
 if ! target="$(find_target)"; then
-  echo "coyote-tracker: could not locate plugin script '${script}' — is the coyote-tracker plugin enabled?" >&2
+  # The plugin is declared but not installed — the documented trap where committing
+  # `enabledPlugins` in settings.json is mistaken for installing it (COY-513). No hook
+  # fires in that state, so this wrapper is the ONLY Tracker code still running, and
+  # the statusLine is the only place a human will see it. Print there, on stdout, and
+  # exit 0 so the line renders (COY-402). Every other wrapper keeps the loud failure.
+  msg="coyote-tracker plugin NOT INSTALLED — no timer, no Human/AI split. Fix: claude plugin install coyote-tracker@yatatechnologies --scope project"
+  if [ "$script" = "statusline.sh" ]; then
+    cat >/dev/null   # drain the statusLine payload so the caller never sees EPIPE
+    echo "⚠ $msg"
+    exit 0
+  fi
+  echo "coyote-tracker: could not locate plugin script '${script}' — ${msg}" >&2
   exit 127
 fi
 

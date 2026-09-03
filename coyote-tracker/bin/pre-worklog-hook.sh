@@ -20,9 +20,13 @@
 #   - override marker present ($LANE/worklog-split-override) — explicit human
 #     override for a backfill / sub-window record. One-shot: deleted on
 #     consumption so the next call re-engages injection.
-#   - untracked window — no timer-start or no turn-log in the lane; there is no
-#     canonical answer to inject.
 #   - worklog-split.sh fails for any reason — fail open, never block a log.
+#
+# Denied (COY-402):
+#   - untracked window — no timer-start or no turn-log in the lane. There is no
+#     canonical answer to inject, so the call would record the agent's estimate
+#     as if it were measured. The deny message routes the author to the override
+#     marker above, which is the same escape hatch, only spoken out loud.
 #
 # The canonical start (COY-206) is the lane's timer-start rendered in the
 # recorder's local time. Injecting it here means the agent can omit or
@@ -78,9 +82,36 @@ if [ -f "$LANE/worklog-split-override" ]; then
   exit 0
 fi
 
-# Untracked window — nothing canonical to inject.
-[ -f "$LANE/timer-start" ] || exit 0
-[ -f "$LANE/turn-log" ]   || exit 0
+# Untracked window — no lane state, so there is nothing canonical to inject.
+#
+# This used to pass through silently, and that silence is the whole of COY-402:
+# the agent's own numbers went to the API unchallenged, and 32 worklogs were
+# recorded with a blanket self-reported ratio that reads, downstream, exactly
+# like a measured one. Deny instead. Not to forbid the worklog — the override
+# marker two blocks up still takes it — but to force the fallback to be a
+# deliberate, stated act rather than the default that happens when nobody looks.
+if [ ! -f "$LANE/timer-start" ] || [ ! -f "$LANE/turn-log" ]; then
+  deny=$(jq -cn --arg sid "$sid" --arg sid8 "${sid:0:8}" '
+    {hookSpecificOutput: {
+       hookEventName: "PreToolUse",
+       permissionDecision: "deny",
+       permissionDecisionReason: (
+         "Coyote Tracker: session lane \($sid8) has no tracking window (no timer-start / turn-log), "
+         + "so there is NO mechanical Human/AI split to inject and the values in this call are your own estimate. "
+         + "Recording that silently is the failure this gate exists to stop (COY-402).\n\n"
+         + "Do this instead:\n"
+         + "1. Tell the user the Tracker is not attached for this session and that any split filed now is an estimate, not a measurement.\n"
+         + "2. Only if they accept that, run (one command per Bash call, no chaining):\n"
+         + "     mkdir -p .claude/sessions/\($sid)\n"
+         + "     touch .claude/sessions/\($sid)/worklog-split-override\n"
+         + "   then retry this call — and say in the worklog description that the split is self-reported.\n"
+         + "The marker is one-shot: it is consumed by the retry, so the next worklog is gated again."
+       )
+     }}' 2>/dev/null) || exit 0
+  [ -n "$deny" ] || exit 0
+  printf '%s' "$deny"
+  exit 0
+fi
 
 # Canonical split at call time. Fail open — never block a worklog if the split
 # script hiccups.

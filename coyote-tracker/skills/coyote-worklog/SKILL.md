@@ -58,6 +58,15 @@ verbatim. The PreToolUse hook rejects a `coyote_create_worklog` whose split devi
 or off from the lane's `timer-start`. To override (backfill/sub-window), confirm with the
 user, then `touch .claude/sessions/<sid>/worklog-split-override` (one-shot) and retry.
 
+**When the Tracker is not attached, say so — do not fill the gap.** If the statusline reads
+`⚠ TRACKER OFF`, the `[turn-ts …]` prepend says `session MISSING`, or the PreToolUse hook
+denies the call for want of a tracking window, there is no measurement to report. Tell the
+user in that same response, name the cause the hook gave, and let them decide. A round
+50/50 written into `time_ai_seconds` / `time_human_seconds` is not a conservative default:
+it is indistinguishable downstream from a measured split, and a single onboarding week of
+it moved a whole project's AI-share figures (COY-402). If the user chooses to file anyway,
+take the override and write "split is self-reported" into the description.
+
 ## Breaks — /:aw and /:bk
 
 Meal/meeting breaks inflate the Human bucket. Bracket them: `/:aw` starts an away interval,

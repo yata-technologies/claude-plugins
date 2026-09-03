@@ -12,22 +12,43 @@
 #     lane was swept while idle, fall back to a fresh window so the session is usable.
 #
 # Hard-requires session_id (per COY-134 design): if it's missing, the multi-session
-# toolset cannot operate. Emit a one-line diagnostic on stderr and exit 0 (hooks must
-# never block SessionStart).
+# toolset cannot operate. That case — and every other reason a lane cannot attach —
+# is announced on STDOUT via tracker-preflight.sh (COY-402), because stdout is what
+# reaches the conversation; a SessionStart hook exiting 0 has its stderr discarded,
+# which is how the old one-line stderr diagnostic stayed invisible while 32 worklogs
+# were filed with hand-estimated splits. Still exit 0 — hooks must never block
+# SessionStart.
 set -uo pipefail
 
-DIR="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}/.claude"
+PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+DIR="$PROJECT_DIR/.claude"
 # State ($DIR/sessions) stays anchored to the consumer repo; sibling scripts
 # resolve from the plugin install dir under the plugin edition (COY-342),
 # falling back to $DIR/bin for the legacy copy-edition layout.
 BIN_DIR="${CLAUDE_PLUGIN_ROOT:-$DIR}/bin"
 
 input=$(cat 2>/dev/null || true)
+
+# Preflight BEFORE parsing: the most common blocker is a missing jq, and a check
+# that needs jq cannot report that (COY-402).
+if [ -r "$BIN_DIR/tracker-preflight.sh" ]; then
+  . "$BIN_DIR/tracker-preflight.sh"
+  preflight=$(tracker_preflight_reason "$PROJECT_DIR")
+  if [ -n "$preflight" ]; then
+    tracker_preflight_block "$preflight" "$PROJECT_DIR"
+    exit 0
+  fi
+fi
+
 sid=$(printf '%s' "$input" | jq -r '.session_id // ""' 2>/dev/null || true)
 src=$(printf '%s' "$input" | jq -r '.source // ""' 2>/dev/null || true)
 
 if [ -z "$sid" ]; then
-  echo "session-start-hook.sh: empty session_id from hook JSON — multi-session toolset cannot operate" >&2
+  if [ -r "$BIN_DIR/tracker-preflight.sh" ]; then
+    tracker_preflight_block no-session-id "$PROJECT_DIR"
+  else
+    echo "session-start-hook.sh: empty session_id from hook JSON — multi-session toolset cannot operate" >&2
+  fi
   exit 0
 fi
 
@@ -41,12 +62,26 @@ rm -f "$LANE/skip-ai-end"
 # tracker-init. Sentinel-gated: a single file test on every subsequent session, so it
 # adds no startup cost once done. Never blocks SessionStart (|| true; hooks must not
 # fail the session). Manual /coyote-tracker:init stays as the repair/re-run path.
+#
+# The sentinel records the plugin VERSION it was written for, not just "done"
+# (COY-402). The consumer wrappers under .claude/bin are generated from a plugin
+# template, so a fix to that template only reaches an existing consumer if init
+# runs again after an upgrade — with a content-free sentinel it never did, and the
+# repos that most need a fix (the ones already installed) were the ones that could
+# not receive it. Comparing versions keeps the steady-state cost at one file read.
 SENTINEL="$DIR/.coyote-tracker-initialized"
-if [ ! -f "$SENTINEL" ]; then
-  init_out=$("$BIN_DIR/tracker-init.sh" 2>&1) || true
-  : > "$SENTINEL"
+plugin_version=$(jq -r '.version // ""' "${CLAUDE_PLUGIN_ROOT:-$DIR/..}/.claude-plugin/plugin.json" 2>/dev/null || true)
+sentinel_version=$(cat "$SENTINEL" 2>/dev/null || true)
+if [ ! -f "$SENTINEL" ] || { [ -n "$plugin_version" ] && [ "$sentinel_version" != "$plugin_version" ]; }; then
+  first_run=1; [ -f "$SENTINEL" ] && first_run=0
+  init_out=$(TRACKER_INIT_QUIET_IF_NOOP=1 "$BIN_DIR/tracker-init.sh" 2>&1) || true
+  printf '%s\n' "$plugin_version" > "$SENTINEL"
   if [ -n "$init_out" ]; then
-    printf 'Coyote Tracker — first-time setup for this repo:\n%s\n\n' "$init_out"
+    if [ "$first_run" -eq 1 ]; then
+      printf 'Coyote Tracker — first-time setup for this repo:\n%s\n\n' "$init_out"
+    else
+      printf 'Coyote Tracker — re-ran setup after upgrading to %s:\n%s\n\n' "$plugin_version" "$init_out"
+    fi
   fi
 fi
 

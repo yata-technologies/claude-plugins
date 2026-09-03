@@ -9,8 +9,17 @@
 #   3. .claude/bin/<name>.sh wrappers          — thin bridges to plugin scripts (team-shared, commit)
 #   4. .claude/settings.local.json             — statusLine + allow-list       (user-local, git-ignored)
 #
-# Existing files are never overwritten. settings.local.json is MERGED (statusLine set
-# only if absent; allow entries unioned), so it is safe to run repeatedly.
+# Existing files are never overwritten, with ONE exception: the .claude/bin wrappers are
+# generated verbatim from the plugin's template and are refreshed when they drift from it
+# (COY-402). They carry an AUTO-GENERATED header and no consumer-specific content, so
+# there is nothing in them to preserve — and leaving them frozen meant a fix to the
+# template could never reach a repo that had already been scaffolded, which is precisely
+# the population that needs it. settings.local.json is MERGED (statusLine set only if
+# absent; allow entries unioned), so it is safe to run repeatedly.
+#
+# Set TRACKER_INIT_QUIET_IF_NOOP=1 to print nothing when there was nothing to do — used by
+# the SessionStart hook's post-upgrade re-run, which must not add a line of noise per
+# upgrade to every session in every consumer repo.
 #
 # Runs automatically once per consumer repo from the SessionStart hook (guarded by a
 # sentinel), or manually via the /coyote-tracker:init slash command, or directly:
@@ -30,6 +39,7 @@ ALLOW_SCRIPTS=(away.sh worklog-split.sh carry-over-ack.sh timer-stop.sh)
 
 created=()
 merged=()
+refreshed=()
 
 # Resolve the worklog-config doc this consumer should point at, BEFORE writing the
 # config (step 1) so its worklog_config_doc= lands on the real doc, not the template
@@ -84,6 +94,9 @@ fi
 
 # 3. thin wrappers → .claude/bin/<name>.sh (byte-identical; each delegates to the
 #    plugin's real script, resolving the moving cache path at runtime).
+#    Refreshed when they drift from the template (see header): the wrappers are the only
+#    Tracker code a consumer repo actually commits, so a template fix that cannot reach
+#    them is a fix that never ships.
 bindir="$PROJECT_DIR/.claude/bin"
 for w in "${WRAPPERS[@]}"; do
   dest="$bindir/$w"
@@ -92,6 +105,10 @@ for w in "${WRAPPERS[@]}"; do
     cp "$TEMPLATES/bin-wrapper.sh.template" "$dest"
     chmod +x "$dest"
     created+=("$dest")
+  elif ! cmp -s "$TEMPLATES/bin-wrapper.sh.template" "$dest"; then
+    cp "$TEMPLATES/bin-wrapper.sh.template" "$dest"
+    chmod +x "$dest"
+    refreshed+=("$dest")
   fi
 done
 
@@ -143,14 +160,19 @@ if [ "$ignore_touched" -eq 1 ]; then
 fi
 
 # Report
-if [ "${#created[@]}" -eq 0 ] && [ "${#merged[@]}" -eq 0 ]; then
-  echo "coyote-tracker: nothing to scaffold — all consumer files already present."
+if [ "${#created[@]}" -eq 0 ] && [ "${#merged[@]}" -eq 0 ] && [ "${#refreshed[@]}" -eq 0 ]; then
+  [ -n "${TRACKER_INIT_QUIET_IF_NOOP:-}" ] || \
+    echo "coyote-tracker: nothing to scaffold — all consumer files already present."
   exit 0
 fi
 
 if [ "${#created[@]}" -gt 0 ]; then
   echo "coyote-tracker: created:"
   for f in "${created[@]}"; do echo "  - ${f#$PROJECT_DIR/}"; done
+fi
+if [ "${#refreshed[@]}" -gt 0 ]; then
+  echo "coyote-tracker: refreshed from the plugin template (auto-generated, commit them):"
+  for f in "${refreshed[@]}"; do echo "  - ${f#$PROJECT_DIR/}"; done
 fi
 if [ "${#merged[@]}" -gt 0 ]; then
   echo "coyote-tracker: merged statusLine + allow-list into:"
