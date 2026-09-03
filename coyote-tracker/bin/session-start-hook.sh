@@ -112,6 +112,11 @@ case "$src" in
       date +%s > "$LANE/timer-start"
       : > "$LANE/turn-log"
       echo 'Coyote Tracker: timer auto-started (see statusline). Create Coyote task BEFORE work. Offer to log at natural breakpoints. Lead your FIRST response of this session with 🕐 HH:MM:SS to confirm the timer — skip the clock on subsequent turns. See the coyote-worklog skill.'
+      # A fresh window is also what a rotated session id looks like from in here
+      # (COY-402 mode 3): the CLI came back with a new id and the previous lane
+      # still holds the real window. Nominate it now; the adoption decision is
+      # made at split time, when peer liveness can actually be proven.
+      "$BIN_DIR/chain-detect.sh" "$sid" 2>/dev/null || true
     fi
     CLAUDE_SWEEP_SKIP_SID="$sid" "$BIN_DIR/sweep-stale-lanes.sh" >/dev/null 2>&1 || true
     ;;

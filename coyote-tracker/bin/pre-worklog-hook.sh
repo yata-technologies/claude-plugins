@@ -116,7 +116,7 @@ fi
 # Canonical split at call time. Fail open — never block a worklog if the split
 # script hiccups.
 split_out=$("$BIN_DIR/worklog-split.sh" "$sid" 2>/dev/null) || exit 0
-IFS=$'\t' read -r exp_total exp_ai exp_human _ai_fmt _human_fmt exp_auto <<< "$split_out"
+IFS=$'\t' read -r exp_total exp_ai exp_human _ai_fmt _human_fmt exp_auto exp_start <<< "$split_out"
 [ -n "${exp_ai:-}" ] && [ -n "${exp_human:-}" ] || exit 0
 exp_auto="${exp_auto:-0}"
 
@@ -126,8 +126,12 @@ exp_auto="${exp_auto:-0}"
 # seconds. The additionalContext still surfaces the raw total.
 inj_seconds=$(( exp_ai + exp_human ))
 
-# Canonical start_time = lane timer-start in the recorder's local time (COY-206).
-timer_epoch=$(cat "$LANE/timer-start" 2>/dev/null || true)
+# Canonical start_time = the split's EFFECTIVE window start in the recorder's local
+# time (COY-206). Read from the split rather than the lane file, because a stitched
+# predecessor lane moves the start earlier than this lane's own timer-start (COY-402)
+# — taking it from the file would pair a two-lane duration with a one-lane start.
+timer_epoch="${exp_start:-}"
+[ -n "$timer_epoch" ] || timer_epoch=$(cat "$LANE/timer-start" 2>/dev/null || true)
 [ -n "$timer_epoch" ] || exit 0
 canon_start=$(date -d "@$timer_epoch" +%H:%M:%S 2>/dev/null || true)
 [ -n "$canon_start" ] || exit 0

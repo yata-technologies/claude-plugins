@@ -58,6 +58,11 @@ verbatim. The PreToolUse hook rejects a `coyote_create_worklog` whose split devi
 or off from the lane's `timer-start`. To override (backfill/sub-window), confirm with the
 user, then `touch .claude/sessions/<sid>/worklog-split-override` (one-shot) and retry.
 
+**If the split warns that a predecessor lane was stitched in**, the session id rotated mid-work
+(the CLI relaunched) and the figures now cover both lanes — say so when you report them, and
+give the earlier window start rather than this lane's. Nothing to do: the recovery is automatic
+since 0.8.0, and no `worklog-split-override` is needed for it.
+
 **When the Tracker is not attached, say so — do not fill the gap.** If the statusline reads
 `⚠ TRACKER OFF`, the `[turn-ts …]` prepend says `session MISSING`, or the PreToolUse hook
 denies the call for want of a tracking window, there is no measurement to report. Tell the
