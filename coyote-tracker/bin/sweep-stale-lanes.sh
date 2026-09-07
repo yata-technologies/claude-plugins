@@ -25,7 +25,25 @@
 set -uo pipefail
 
 DIR="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}/.claude"
-SESSIONS="$DIR/sessions"
+
+# Lane state is per-REPO, not per-worktree: `sessions/` is gitignored, so a
+# worktree created mid-session holds no copy, and anchoring on this checkout's
+# root makes the scripts disagree about where the lane lives — then forks a
+# second, empty one and resets the timer (COY-518). Scaffolding ($DIR) stays
+# per-checkout; only lane state moves.
+_tracker_paths="$(dirname "${BASH_SOURCE[0]}")/tracker-paths.sh"
+if [ -r "$_tracker_paths" ]; then
+  . "$_tracker_paths"
+else
+  # Never let a missing helper resolve state to `/.claude` — that would put
+  # lanes outside the repo entirely, which is a worse version of the bug this
+  # replaced. Fall back to the old per-checkout root instead (COY-518).
+  tracker_state_root() {
+    printf '%s' "${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+  }
+fi
+STATE_DIR="$(tracker_state_root "")/.claude"
+SESSIONS="$STATE_DIR/sessions"
 [ -d "$SESSIONS" ] || exit 0
 
 THRESHOLD_MIN="${CLAUDE_SWEEP_THRESHOLD_MIN:-1440}"

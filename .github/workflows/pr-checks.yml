@@ -110,3 +110,32 @@ jobs:
             echo "no scripts found — check the glob"
             exit 1
           fi
+
+  tests:
+    name: Tracker tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # The lane-anchor tests build a real `git worktree` fixture, so they need
+      # a git identity and jq. They are the only guard against COY-518-class
+      # regressions: a lane that resolves to the wrong checkout keeps recording
+      # worklogs, so nothing looks broken until a split silently loses hours.
+      - name: Configure git for the fixtures
+        run: |
+          git config --global user.email ci@example.com
+          git config --global user.name ci
+
+      - name: Run every *.test.sh
+        run: |
+          set -euo pipefail
+          found=0
+          while IFS= read -r -d '' t; do
+            echo "── $t"
+            bash "$t"
+            found=1
+          done < <(find . -path ./.git -prune -o -name '*.test.sh' -print0)
+          if [ "$found" != "1" ]; then
+            echo "no tests found — check the glob"
+            exit 1
+          fi

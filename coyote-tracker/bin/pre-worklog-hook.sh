@@ -34,7 +34,8 @@
 set -uo pipefail
 
 DIR="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}/.claude"
-# State ($DIR/sessions) stays anchored to the consumer repo; sibling scripts
+# Lane state lives under $STATE_DIR, resolved by tracker-paths.sh (COY-518);
+# $DIR is this checkout, for scaffolding and config only. Sibling scripts
 # resolve from the plugin install dir under the plugin edition (COY-342),
 # falling back to $DIR/bin for the legacy copy-edition layout.
 BIN_DIR="${CLAUDE_PLUGIN_ROOT:-$DIR}/bin"
@@ -73,7 +74,25 @@ EOF
   exit 2
 fi
 
-LANE="$DIR/sessions/$sid"
+
+# Lane state is per-REPO, not per-worktree: `sessions/` is gitignored, so a
+# worktree created mid-session holds no copy, and anchoring on this checkout's
+# root makes the scripts disagree about where the lane lives — then forks a
+# second, empty one and resets the timer (COY-518). Scaffolding ($DIR) stays
+# per-checkout; only lane state moves.
+_tracker_paths="$(dirname "${BASH_SOURCE[0]}")/tracker-paths.sh"
+if [ -r "$_tracker_paths" ]; then
+  . "$_tracker_paths"
+else
+  # Never let a missing helper resolve state to `/.claude` — that would put
+  # lanes outside the repo entirely, which is a worse version of the bug this
+  # replaced. Fall back to the old per-checkout root instead (COY-518).
+  tracker_state_root() {
+    printf '%s' "${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+  }
+fi
+STATE_DIR="$(tracker_state_root "$sid")/.claude"
+LANE="$STATE_DIR/sessions/$sid"
 
 # Explicit human override (backfill, sub-window) — honor the agent's values.
 # One-shot: consume the marker so the next call re-engages injection.

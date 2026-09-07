@@ -55,7 +55,7 @@ Timestamp capture and timer state are owned by Claude Code hooks configured in t
 
 ### How it works
 
-State is per-session — each Claude Code session gets its own **lane** at `${CLAUDE_PROJECT_DIR}/.claude/sessions/<session_id>/` so concurrent sessions in the same project can't clobber each other's timer or turn-log (COY-134). All hooks read `session_id` from the hook JSON input and operate inside that lane only.
+State is per-session — each Claude Code session gets its own **lane** at `<repo>/.claude/sessions/<session_id>/` so concurrent sessions in the same project can't clobber each other's timer or turn-log (COY-134). The lane root is the **repository**, not the current worktree — see **Worktrees** below. All hooks read `session_id` from the hook JSON input and operate inside that lane only.
 
 - **`SessionStart` hook** (on `startup` / `clear`): creates the lane, unconditionally writes the current epoch to `<lane>/timer-start`, truncates `<lane>/turn-log`, and sweeps any lane whose `last-active` mtime exceeds 24h. Each session = one fresh timer window. (`claude --resume` fires the `resume` matcher instead, which preserves the lane so an interrupted conversation continues seamlessly. If the lane was swept while idle, `resume` falls back to a fresh window.)
 - **`UserPromptSubmit` hook:** prepends every user turn with `[turn-ts HH:MM:SS <epoch> | session <sid_8> | elapsed HH:MM:SS]`. The 8-char session prefix is the arg you pass to `worklog-split.sh` and `timer-stop.sh`. Claude reads these markers directly — no `date` command needed. Also pattern-matches the prompt for wind-down phrasing (e.g., "wrap up", "good for today", "終わり"); when detected, the prepend includes a ⚠️ note instructing Claude to plan the close marker in the response. When `timer-start` is missing (most often because `🛑 Session closed.` was emitted earlier and the session continued without `/clear` or `/exit`), the prepend carries a loud reminder to tell the user to run `/clear` or `/exit` before further work.
@@ -72,6 +72,23 @@ State is per-session — each Claude Code session gets its own **lane** at `${CL
 - **Session start** — lead your **first response of a new conversation** with `🕐 HH:MM:SS` (wall-clock from the first `[turn-ts …]` marker) on its own line. Confirms the timer is alive.
 - **Session stop** — when you emit `🛑 Session closed.` (the Stop hook will remove `timer-start`), include a `🕐 HH:MM:SS` line showing the stop wall-clock time in the same response. Brackets the session visually. **Always also include in the same response a clear instruction to the user: "Please run `/clear` (preferred) or `/exit` and reopen before any further work — this session is now untracked."** Without this, the human may keep typing in the same terminal and lose tracking on the next chunk of work. The Stop hook injects this same reminder after the marker fires, but stating it in your own closing message ensures the human sees it.
 - **Intermediate turns** — do not prefix responses with the clock. Pull timestamps silently for split computation. (Exception: if the human explicitly asks for the current time, or if you're about to present a worklog offer.)
+
+### Worktrees (COY-518)
+
+Lanes are per-**repo**, not per-branch or per-checkout. `tracker-paths.sh` resolves the lane root
+for every hook and script: it prefers whichever checkout already holds *this session's* lane, then
+falls back to the main checkout (the parent of the shared `git-common-dir`). So a session that
+starts in the main checkout and later moves into a `git worktree` keeps the same lane, and a
+session launched directly inside a worktree keeps the lane it was given.
+
+Do not anchor new state on `${CLAUDE_PROJECT_DIR}` directly. That variable follows the session
+into a worktree, and because `sessions/` is gitignored a fresh worktree never has a copy — which
+is how this broke: the statusline read the worktree and printed `⚠ TRACKER OFF` while the split
+scripts still read the main checkout. The next prompt would have forked a second, empty lane,
+`heal-timer.sh` would have restarted the timer from that turn, and the statusline would have gone
+back to looking healthy while the elapsed time and split before the move were silently gone.
+`${CLAUDE_PROJECT_DIR}` remains correct for per-checkout *scaffolding* (`bin/`, config, the
+init sentinel) — only lane state is per-repo.
 
 ### Multi-session (concurrent Claude Code sessions, COY-134)
 
@@ -181,7 +198,7 @@ Split Human/AI time automatically at conversation turn boundaries. Each turn's b
 **Compute at worklog time:**
 Run `.claude/bin/worklog-split.sh <sid_8>` — where `<sid_8>` is the 8-char session prefix from the latest `[turn-ts HH:MM:SS <epoch> | session <sid_8> | …]` prepend. The script prints `total<TAB>ai<TAB>human<TAB>ai_HHMMSS<TAB>human_HHMMSS<TAB>auto_away_s<TAB>start_epoch`. That's the split to use in the worklog. Invoke it as a bare command (no env-var prefix, no `;`/`&&` chain, no piping into another tool); see "Invoking worklog scripts" below.
 
-**BLOCKING — never derive the split yourself.** A `PreToolUse` hook (`pre-worklog-hook.sh`, COY-133) gates `mcp__coyote__coyote_create_worklog` and rejects calls whose `time_ai_seconds`/`time_human_seconds` deviate from `worklog-split.sh` canonical (for the calling session's lane) by more than 60s, or where the values do not sum to `seconds`. The Stop hook also injects the current canonical numbers into every end-of-turn reminder so you have fresh, mechanical values when proposing a worklog offer. To override (backfilling, sub-window record), confirm with the human, then `touch ${CLAUDE_PROJECT_DIR}/.claude/sessions/<session_id>/worklog-split-override` (one-shot — auto-deleted on use) before retrying.
+**BLOCKING — never derive the split yourself.** A `PreToolUse` hook (`pre-worklog-hook.sh`, COY-133) gates `mcp__coyote__coyote_create_worklog` and rejects calls whose `time_ai_seconds`/`time_human_seconds` deviate from `worklog-split.sh` canonical (for the calling session's lane) by more than 60s, or where the values do not sum to `seconds`. The Stop hook also injects the current canonical numbers into every end-of-turn reminder so you have fresh, mechanical values when proposing a worklog offer. To override (backfilling, sub-window record), confirm with the human, then `touch <lane>/worklog-split-override` (the lane the `[turn-ts …]` prepend names; in a worktree that is the main checkout's — see **Worktrees**) (one-shot — auto-deleted on use) before retrying.
 
 **No lane → the call is denied, not waved through (COY-402).** When the calling lane has no `timer-start`/`turn-log` there is nothing canonical to inject, and the hook used to pass the call straight to the API with whatever numbers you supplied. It now denies and tells you to surface the situation to the human first. The escape hatch is the same `worklog-split-override` marker, so nothing is forbidden — it is only made deliberate. The reason this matters: a self-reported split is *cheaper* than an investigation and looks identical downstream, so left ungated it becomes the silent default.
 

@@ -22,10 +22,22 @@ set -uo pipefail
 
 PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 DIR="$PROJECT_DIR/.claude"
-# State ($DIR/sessions) stays anchored to the consumer repo; sibling scripts
+# Lane state lives under $STATE_DIR, resolved by tracker-paths.sh (COY-518);
+# $DIR is this checkout, for scaffolding and config only. Sibling scripts
 # resolve from the plugin install dir under the plugin edition (COY-342),
 # falling back to $DIR/bin for the legacy copy-edition layout.
 BIN_DIR="${CLAUDE_PLUGIN_ROOT:-$DIR}/bin"
+_tracker_paths="$(dirname "${BASH_SOURCE[0]}")/tracker-paths.sh"
+if [ -r "$_tracker_paths" ]; then
+  . "$_tracker_paths"
+else
+  # Never let a missing helper resolve state to `/.claude` — that would put
+  # lanes outside the repo entirely, which is a worse version of the bug this
+  # replaced. Fall back to the old per-checkout root instead (COY-518).
+  tracker_state_root() {
+    printf '%s' "${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+  }
+fi
 
 input=$(cat 2>/dev/null || true)
 
@@ -33,9 +45,13 @@ input=$(cat 2>/dev/null || true)
 # that needs jq cannot report that (COY-402).
 if [ -r "$BIN_DIR/tracker-preflight.sh" ]; then
   . "$BIN_DIR/tracker-preflight.sh"
-  preflight=$(tracker_preflight_reason "$PROJECT_DIR")
+  # The session id is not parsed yet, so this is the sid-less resolution: the
+  # main checkout, which is where a new lane lands anyway. Probing this
+  # checkout instead would test a directory the lanes no longer use.
+  state_root=$(tracker_state_root "")
+  preflight=$(tracker_preflight_reason "$state_root")
   if [ -n "$preflight" ]; then
-    tracker_preflight_block "$preflight" "$PROJECT_DIR"
+    tracker_preflight_block "$preflight" "$state_root"
     exit 0
   fi
 fi
@@ -52,7 +68,13 @@ if [ -z "$sid" ]; then
   exit 0
 fi
 
-LANE="$DIR/sessions/$sid"
+# Lane state is per-REPO, not per-worktree: `sessions/` is gitignored, so a
+# worktree created mid-session holds no copy, and anchoring on this checkout's
+# root makes the scripts disagree about where the lane lives — then forks a
+# second, empty one and resets the timer (COY-518). Scaffolding ($DIR) stays
+# per-checkout; only lane state moves.
+STATE_DIR="$(tracker_state_root "$sid")/.claude"
+LANE="$STATE_DIR/sessions/$sid"
 mkdir -p "$LANE"
 rm -f "$LANE/skip-ai-end"
 

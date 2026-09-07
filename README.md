@@ -107,8 +107,9 @@ coyote-tracker/
 
 - **Executables + rules + defaults** live in the plugin (`${CLAUDE_PLUGIN_ROOT}`),
   versioned by `plugin.json`, auto-updated per user (see above).
-- **Per-project state + values** live in the consumer repo (`${CLAUDE_PROJECT_DIR}`):
-  `.claude/sessions/` (runtime lanes), `.claude/coyote-tracker.config` (backend + IDs),
+- **Per-project state + values** live in the consumer repo:
+  `.claude/sessions/` (runtime lanes — anchored on the **repo**, i.e. the main checkout, not
+  the current `git worktree`; COY-518), `.claude/coyote-tracker.config` (backend + IDs),
   `docs/<date>-<key>-worklog-config.md`.
 
 ### Auto-update mechanism (maintainer notes)
