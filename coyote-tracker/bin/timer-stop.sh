@@ -14,9 +14,9 @@ if [ -z "$arg" ]; then
 fi
 
 # Lane state is per-REPO, not per-worktree (COY-518) — resolve it through the
-# shared helper, and only once $arg is known so an exact session id can pin the
-# checkout that already holds its lane; a prefix or --all falls back to the
-# main checkout.
+# shared helper, and only once $arg is known so a session id can pin the
+# checkout that already holds its lane. A prefix pins it too (COY-517); only
+# --all, which names no session, falls back to the main checkout.
 _tracker_paths="$(dirname "${BASH_SOURCE[0]}")/tracker-paths.sh"
 if [ -r "$_tracker_paths" ]; then
   . "$_tracker_paths"

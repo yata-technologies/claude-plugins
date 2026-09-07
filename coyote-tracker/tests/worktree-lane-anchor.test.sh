@@ -29,6 +29,8 @@ if ! command -v jq >/dev/null 2>&1; then
 fi
 
 SID=11111111-2222-4333-8444-555555555555
+SID2=11111111-2222-4333-8444-666666666666   # shares SID's 8-char prefix
+PFX=11111111                                # the prefix every wrapper documents
 START=1700000000   # fixed epoch so elapsed is deterministic
 
 # --- fixture ---------------------------------------------------------------
@@ -51,14 +53,23 @@ setup() {
 teardown() { [ -n "${ROOT:-}" ] && rm -rf "$ROOT"; }
 trap teardown EXIT
 
-lane_of() { printf '%s/.claude/sessions/%s' "$1" "$SID"; }
+lane_of() { printf '%s/.claude/sessions/%s' "$1" "${2:-$SID}"; }
 
-# seed_lane <checkout> — a lane mid-session: timer running, one AI turn logged.
+# seed_lane <checkout> [sid] — a lane mid-session: timer running, one AI turn.
 seed_lane() {
-  local lane; lane=$(lane_of "$1")
+  local lane; lane=$(lane_of "$1" "${2:-$SID}")
   mkdir -p "$lane"
   printf '%s\n' "$START" > "$lane/timer-start"
   printf 'AI_START %s 00:00:00\n' "$START" > "$lane/turn-log"
+}
+
+# hand_run <cwd> <script> [args…] — invoke a wrapper the way a human does:
+# from a shell inside some checkout, with CLAUDE_PROJECT_DIR unset. Only Claude
+# Code exports that variable, so this — not the hook path — is what `/aw`, `/bk`
+# and worklog-split.sh actually run under (COY-517).
+hand_run() {
+  local dir="$1"; shift
+  ( unset CLAUDE_PROJECT_DIR; cd "$dir" && "$@" )
 }
 
 prompt_payload() { printf '{"session_id":"%s","prompt":"hello","cwd":"%s"}' "$SID" "$1"; }
@@ -102,9 +113,13 @@ case "$line" in
   *)               bad "statusline shows the timer from the worktree" "TIMER …" "$line" ;;
 esac
 
+# Field 7 (the effective start epoch), not the whole line: total counts from
+# `now`, so two invocations that straddle a second boundary differ for reasons
+# unrelated to lane resolution — which made this case flake about 1 run in 10.
 split_wt=$(CLAUDE_PROJECT_DIR="$WT"   "$BIN/worklog-split.sh" "$SID" 2>/dev/null)
 split_mn=$(CLAUDE_PROJECT_DIR="$MAIN" "$BIN/worklog-split.sh" "$SID" 2>/dev/null)
-is "the split is identical from either checkout" "$split_mn" "$split_wt"
+is "the split is identical from either checkout" \
+   "$(printf '%s' "$split_mn" | cut -f7)" "$(printf '%s' "$split_wt" | cut -f7)"
 [ -n "$split_wt" ] && ok "the split is non-empty" || bad "the split is non-empty" "figures" "(empty)"
 teardown
 
@@ -161,6 +176,82 @@ is "an empty worktree lane does not win"              "$MAIN" "$(tracker_state_r
 NOTGIT=$(mktemp -d)
 is "a non-git directory falls back to itself" "$NOTGIT" "$(tracker_state_root "$SID" "$NOTGIT")"
 rm -rf "$NOTGIT"
+teardown
+
+echo
+echo "COY-517 — hand-invoked wrapper, 8-char prefix, no CLAUDE_PROJECT_DIR"
+# COY-518 anchored the lane but resolved it by EXACT session id, while every
+# hand-invoked wrapper documents an 8-char prefix. A prefix matched no lane in
+# any checkout, so resolution always fell through to the main checkout — and a
+# session launched inside a worktree, whose lane is the repo's only one, still
+# got `no session lane matches`. That is the failure COY-517 was filed for, and
+# it survived the anchor fix because every case above passes CLAUDE_PROJECT_DIR
+# explicitly; nothing exercised the bare shell path a human actually types.
+setup
+seed_lane "$WT"          # session launched in the worktree: its lane is there
+
+out=$(hand_run "$WT" "$BIN/worklog-split.sh" "$PFX" 2>&1)
+case "$out" in
+  *"no session lane matches"*) bad "a prefix finds the worktree-local lane" "a split" "$out" ;;
+  *)                           ok  "a prefix finds the worktree-local lane" ;;
+esac
+# Compare the effective start epoch (field 7), not the whole line: total is
+# derived from `now`, so two live invocations straddling a second boundary
+# differ for reasons that have nothing to do with which lane was resolved.
+is "the prefix resolves to the same lane as the full id" \
+   "$(hand_run "$WT" "$BIN/worklog-split.sh" "$SID" 2>/dev/null | cut -f7)" \
+   "$(hand_run "$WT" "$BIN/worklog-split.sh" "$PFX" 2>/dev/null | cut -f7)"
+is "that lane is the seeded one" "$START" \
+   "$(hand_run "$WT" "$BIN/worklog-split.sh" "$PFX" 2>/dev/null | cut -f7)"
+
+# away.sh is the wrapper people invoke by hand most often (`/aw`, `/bk`), and
+# it WRITES — landing in the wrong checkout would fork a lane, not just fail.
+hand_run "$WT" "$BIN/away.sh" start "$PFX" >/dev/null 2>&1
+is "away.sh appends to the worktree lane" "1" \
+   "$(grep -c AWAY_START "$(lane_of "$WT")/turn-log" 2>/dev/null || echo 0)"
+is "away.sh forks no lane in the main checkout" "0" "$(count_lanes "$MAIN")"
+teardown
+
+setup
+seed_lane "$MAIN"        # the original COY-517 repro: lane in the main checkout
+out=$(hand_run "$WT" "$BIN/worklog-split.sh" "$PFX" 2>&1)
+case "$out" in
+  *"no session lane matches"*) bad "a prefix reaches the main checkout from a worktree" "a split" "$out" ;;
+  *)                           ok  "a prefix reaches the main checkout from a worktree" ;;
+esac
+teardown
+
+echo
+echo "COY-517 — prefix resolver unit cases"
+setup
+. "$BIN/tracker-paths.sh"
+seed_lane "$WT"
+is "a prefix pins the checkout holding the lane" "$WT"   "$(tracker_state_root "$PFX" "$WT")"
+is "an unrelated prefix still lands on the repo"  "$MAIN" "$(tracker_state_root "9999999" "$WT")"
+
+# Boundary, deliberately pinned: only two candidates are ever considered — the
+# hint and the main checkout — so a lane in a SIBLING worktree is invisible from
+# the main checkout. Prefix support does not change that, and does not need to:
+# the hand-invoked path runs from the checkout you are standing in, which is the
+# hint. Widening this to scan every `git worktree list` entry is a bigger change
+# than COY-517 needs, and would make an unrelated worktree able to claim a lane.
+is "a sibling worktree's lane is not searched from main" "$MAIN" "$(tracker_state_root "$PFX" "$MAIN")"
+
+# A prefix matching a lane that carries no state must not win, exactly as an
+# empty exact-id lane does not: user-prompt-hook.sh mkdir -p's before writing.
+rm -rf "$(lane_of "$WT")"; mkdir -p "$(lane_of "$WT")"
+seed_lane "$MAIN"
+is "an empty prefix match does not win" "$MAIN" "$(tracker_state_root "$PFX" "$WT")"
+
+# Two lanes sharing a prefix: resolving to that checkout would trade a working
+# answer for the caller's "ambiguous prefix" error, so ambiguity does not win.
+teardown
+setup
+seed_lane "$WT"
+seed_lane "$WT" "$SID2"
+seed_lane "$MAIN"
+is "an ambiguous prefix does not win the checkout" "$MAIN" "$(tracker_state_root "$PFX" "$WT")"
+is "the full id still pins the worktree"           "$WT"   "$(tracker_state_root "$SID" "$WT")"
 teardown
 
 echo
