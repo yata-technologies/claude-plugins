@@ -81,6 +81,12 @@ falls back to the main checkout (the parent of the shared `git-common-dir`). So 
 starts in the main checkout and later moves into a `git worktree` keeps the same lane, and a
 session launched directly inside a worktree keeps the lane it was given.
 
+"This session's lane" is matched by full id **or** by the 8-char prefix the wrappers document, so
+`away.sh start <sid_8>` from inside a worktree finds the same lane the hooks do (COY-517). Only a
+call that names no session at all (`timer-stop.sh --all`, `sweep-stale-lanes.sh`) goes straight to
+the main checkout. Two candidates are ever considered — the checkout you are in and the main one —
+so a lane belonging to a *sibling* worktree is deliberately not searched for.
+
 Do not anchor new state on `${CLAUDE_PROJECT_DIR}` directly. That variable follows the session
 into a worktree, and because `sessions/` is gitignored a fresh worktree never has a copy — which
 is how this broke: the statusline read the worktree and printed `⚠ TRACKER OFF` while the split
