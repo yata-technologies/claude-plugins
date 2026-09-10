@@ -13,7 +13,9 @@
 #      COY-156 + COY-180). Stop hook already nudges "Wrap and stop?"; with
 #      task_slug captured here it now also nudges "did the same response
 #      also propose marking <slug> + parent issue complete?". Also appends
-#      task_slug to LANE/worklogs-this-session for the COY-183 gate.
+#      task_slug to LANE/worklogs-this-session for the COY-183 gate, and the
+#      created worklog's own slug to LANE/worklog-slugs-this-session (COY-522
+#      — the pairing side of the agent_session_id the pre-hook injects).
 #   3. <task_update_tool> with status in <status_closed>
 #      → appends slug to LANE/tasks-closed-this-session. The Stop hook's
 #      COY-183 gate diffs worklogs-this-session against this to detect
@@ -62,6 +64,8 @@ task_create_tool=$(tracker_cfg  task_create_tool  "mcp__coyote__coyote_create_ta
 task_update_tool=$(tracker_cfg  task_update_tool  "mcp__coyote__coyote_update_task")
 issue_update_tool=$(tracker_cfg issue_update_tool "mcp__coyote__coyote_update_issue")
 task_slug_pattern=$(tracker_cfg task_slug_pattern '[A-Z][A-Z0-9]+-T[0-9]+')
+# COY-522: worklog slugs carry a W prefix where tasks carry T (worker slugs.ts).
+worklog_slug_pattern=$(tracker_cfg worklog_slug_pattern '[A-Z][A-Z0-9]+-W[0-9]+')
 status_in_progress=$(tracker_cfg status_in_progress "in_progress")
 status_not_started=$(tracker_cfg status_not_started "not_started")
 status_closed=$(tracker_cfg     status_closed     "complete,cancelled")
@@ -96,6 +100,20 @@ LANE="$STATE_DIR/sessions/$sid"
 now=$(date +%s)
 ts=$(date +%H:%M:%S)
 
+# Flatten tool_response to searchable text. It can be either a string (rare) or
+# an object with a content array of {type: "text", text: "..."} entries, so both
+# shapes are handled. Used to recover server-generated slugs, which appear only
+# in the response and never in tool_input.
+resp_text() {
+  printf '%s' "$input" | jq -r '
+    .tool_response as $r |
+    if   ($r | type) == "string" then $r
+    elif ($r | type) == "object" and ($r.content? | type) == "array" then
+      ($r.content | map(select(.type == "text") | .text) | join(" "))
+    else ($r | tostring) end
+  ' 2>/dev/null || true
+}
+
 # Worklog-recorded marker fires for the configured backend (default Coyote MCP).
 if [ "$tool" = "$backend_tool" ]; then
   task_slug=$(printf '%s' "$input" | jq -r '.tool_input.task_slug // ""')
@@ -116,25 +134,37 @@ if [ "$tool" = "$backend_tool" ]; then
   # COY-183: also append the slug to worklogs-this-session so the Stop
   # hook close-out gate can diff against tasks-closed-this-session. Skip
   # when task_slug is empty (defensive — the MCP server requires it).
+  #
+  # NOTE the slug recorded here is the TASK's, not the worklog's — the gate
+  # diffs tasks. Repurposing this file would break that gate, so the worklog's
+  # own identity goes to a separate file below rather than into this one.
   [ -n "$task_slug" ] && printf '%s\n' "$task_slug" >> "$LANE/worklogs-this-session"
+
+  # COY-522: record the created worklog's OWN slug. Until now it was captured
+  # on neither side — the lane knew only the task, and (before provenance
+  # injection) the worklog knew nothing of the session — so a session's output
+  # could not be enumerated locally at all. With pre-worklog-hook stamping
+  # agent_session_id on the way in, this closes the loop on the way out.
+  #
+  # Best-effort by design: the slug exists only in the response text, so a
+  # backend whose success message omits it simply records nothing. Never gates
+  # the markers above, which the Stop hook's COY-183/COY-403 nudges depend on.
+  #
+  # Kept out of LANE/worklog-recorded on purpose: stop-hook.sh reads that file
+  # with `read -r _ _ w_slug w_started`, so a fifth field would be absorbed
+  # into w_started and corrupt the start-side nudge.
+  wl_slug=$(resp_text | grep -oE "$worklog_slug_pattern" | head -1)
+  [ -n "$wl_slug" ] && printf '%s\t%s\t%s\n' "$wl_slug" "${task_slug:--}" "$ts" \
+    >> "$LANE/worklog-slugs-this-session"
 fi
 
 # Task/issue lifecycle markers. Case patterns are quoted variable expansions,
 # so each arm matches the configured tool name literally.
 case "$tool" in
   "$task_create_tool")
-    # The new task's slug is generated server-side; pull it from the MCP
-    # response. tool_response can be either a string (rare) or an object
-    # with a content array of {type: "text", text: "..."} entries — handle
-    # both shapes. Extract the first token matching task_slug_pattern.
-    resp_text=$(printf '%s' "$input" | jq -r '
-      .tool_response as $r |
-      if   ($r | type) == "string" then $r
-      elif ($r | type) == "object" and ($r.content? | type) == "array" then
-        ($r.content | map(select(.type == "text") | .text) | join(" "))
-      else ($r | tostring) end
-    ' 2>/dev/null || true)
-    slug=$(printf '%s' "$resp_text" | grep -oE "$task_slug_pattern" | head -1)
+    # The new task's slug is generated server-side, so it comes from the
+    # response: first token matching task_slug_pattern.
+    slug=$(resp_text | grep -oE "$task_slug_pattern" | head -1)
     [ -n "$slug" ] || exit 0
     # Backends default a new task to the not-started status when omitted. If
     # the agent already created it in_progress (the ideal path), the Stop

@@ -142,6 +142,9 @@ The Stop hook gates the session-close marker on **pending task close-outs**. COY
 - `<lane>/worklogs-this-session` — task slug per worklog call on the configured `backend_tool`.
 - `<lane>/tasks-closed-this-session` — task slug per `task_update_tool` call with `status` in `status_closed` (plus `task_create_tool` calls that create the task already closed).
 - `<lane>/tasks-started-this-session` — task slug per `task_update_tool` call with `status` = `status_in_progress` (plus tasks created directly in-progress). Feeds the COY-403 **start-side nudge**: when a worklog lands for a task whose slug never reached this file, the Stop hook says so. That one is a soft nudge, never a block — the flip may legitimately have happened in an earlier session, which the lane cannot see.
+- `<lane>/worklog-slugs-this-session` — `<worklog_slug>\t<task_slug>\t<HH:MM:SS>` per successful worklog call (COY-522). Not part of the gate; it is the only local record of which worklogs a session actually produced, and it dies with the lane at `timer-stop.sh`.
+
+Note the first three hold **task** slugs, not worklog slugs — the gate diffs tasks. Only the last one names the worklog itself.
 
 When the Stop hook detects `🛑 Session closed.`, it diffs the two files. Every slug in `worklogs-this-session` but NOT in `tasks-closed-this-session` is **pending**. If any pending slug exists **and** `<lane>/carry-over-ack` is absent, the hook:
 

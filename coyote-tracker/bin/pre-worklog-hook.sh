@@ -16,11 +16,42 @@
 # longer be wrong — while eliminating the double worklog-split.sh call and the
 # block/retry round-trip during session close.
 #
+# Provenance (COY-522). The same rewrite also stamps agent_session_id (this
+# lane's session id) and agent_source, so a worklog can be cross-referenced
+# against the CLI session that produced it. Without them a Tracker-recorded
+# worklog is indistinguishable in the DB from one typed into the web form.
+# Both are write-once server-side, so this is the only chance to set them.
+#
+# ⚠️ These two keys REQUIRE Coyote MCP >= 1.31.0. The MCP's validateArgs
+# rejects unknown parameters rather than ignoring them, so an older client
+# receiving them fails the worklog create outright — loudly, and with a message
+# that does not say "upgrade". Nothing in the Worker enforces this: the 426
+# floor (MIN_MCP_VERSION) is 1.11.0 and was deliberately NOT raised, because it
+# applies to every coy_ client including several that never run this plugin
+# (COY-T745 holds that decision and the census behind it).
+#
+# What makes it safe is update ordering, not a gate: the MCP respawns on every
+# Claude Code start via `npx -y ...@latest`, while this plugin's self-update
+# downloads on session start and applies only at the NEXT session. A session
+# running this code therefore always has an MCP that respawned at least as
+# recently — and 1.31.0 published before this shipped. The gap is non-npx
+# installs (pinned, or a local checkout) and very long-lived sessions.
+#
+# So: if you add a field here, check the MCP accepts it in a version the fleet
+# already has. Do not assume unknown fields are ignored anywhere in this chain.
+#
 # Passthrough (agent's own values honored, no injection):
 #   - override marker present ($LANE/worklog-split-override) — explicit human
 #     override for a backfill / sub-window record. One-shot: deleted on
 #     consumption so the next call re-engages injection.
 #   - worklog-split.sh fails for any reason — fail open, never block a log.
+#
+#   Neither passthrough path stamps provenance, deliberately. Emitting an
+#   updatedInput there would mean also emitting permissionDecision "allow",
+#   which would newly auto-approve calls those paths currently leave to the
+#   normal permission flow — a bigger behavioural change than the provenance is
+#   worth on two rare branches. Such worklogs land with NULL provenance, which
+#   consumers must already tolerate (see the ambiguity note in COY-522).
 #
 # Denied (COY-402):
 #   - untracked window — no timer-start or no turn-log in the lane. There is no
@@ -46,8 +77,9 @@ BIN_DIR="${CLAUDE_PLUGIN_ROOT:-$DIR}/bin"
 # backend_tool in ${CLAUDE_PROJECT_DIR}/.claude/coyote-tracker.config.
 # NOTE: only the tool-name gate is swapped here — the split/start_time
 # injection below still reads/writes Coyote MCP tool_input field names
-# (seconds/time_ai_seconds/time_human_seconds/start_time). A non-Coyote backend
-# with different param names needs a field-mapping layer (out of scope for T480).
+# (seconds/time_ai_seconds/time_human_seconds/start_time, and since COY-522
+# agent_session_id/agent_source). A non-Coyote backend with different param
+# names needs a field-mapping layer (out of scope for T480).
 TRACKER_CONFIG="$DIR/coyote-tracker.config"
 if [ -r "$BIN_DIR/tracker-config.sh" ]; then
   . "$BIN_DIR/tracker-config.sh"
@@ -59,6 +91,10 @@ else
   tracker_status_matches() { case ",${2// /}," in *",$1,"*) return 0;; *) return 1;; esac; }
 fi
 backend_tool=$(tracker_cfg backend_tool "mcp__coyote__coyote_create_worklog")
+# COY-522: what to record as the worklog's producer. The value names the tool
+# that recorded it, not the model and not the MCP client, so a fork under
+# another name can say so without patching this script.
+agent_source=$(tracker_cfg agent_source "coyote-tracker")
 
 input=$(cat)
 tool=$(printf '%s' "$input" | jq -r '.tool_name // ""')
@@ -169,6 +205,8 @@ out=$(printf '%s' "$input" | jq -c \
   --arg total "$exp_total" \
   --argjson auto "$exp_auto" \
   --arg sidshort "$sid_short" \
+  --arg agentsid "$sid" \
+  --arg agentsrc "$agent_source" \
   '.tool_input as $ti |
    (if $auto > 0 then " ⚠️ Auto-away: \($auto)s of idle time was reclassified out of Human by the idle cap — the timer was preserved (no /clear, and no /bk since no /aw was ever opened). Tell the human plainly that this idle stretch was excluded from Human time; if it was actually working time, they can re-log with an explicit worklog-split-override." else "" end) as $autonote | {
      hookSpecificOutput: {
@@ -178,9 +216,11 @@ out=$(printf '%s' "$input" | jq -c \
          seconds: $sec,
          time_ai_seconds: $ai,
          time_human_seconds: $hu,
-         start_time: $st
+         start_time: $st,
+         agent_session_id: $agentsid,
+         agent_source: $agentsrc
        }),
-       additionalContext: ("Coyote Tracker (\($sidshort)): canonical split injected by pre-worklog-hook — seconds=\($sec), time_ai_seconds=\($ai), time_human_seconds=\($hu), start_time=\($st) (raw window total=\($total)s). Report THESE figures to the human in your closing message. Do NOT run worklog-split.sh — the hook is the source of truth for this session'"'"'s lane.\($autonote)")
+       additionalContext: ("Coyote Tracker (\($sidshort)): canonical split injected by pre-worklog-hook — seconds=\($sec), time_ai_seconds=\($ai), time_human_seconds=\($hu), start_time=\($st) (raw window total=\($total)s). Report THESE figures to the human in your closing message. Do NOT run worklog-split.sh — the hook is the source of truth for this session'"'"'s lane. Provenance was injected too (agent_source=\($agentsrc), agent_session_id=\($agentsid)) — do not pass either yourself, and do not report them as part of the split.\($autonote)")
      }
    }' 2>/dev/null) || exit 0
 
