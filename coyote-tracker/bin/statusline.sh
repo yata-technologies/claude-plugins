@@ -57,11 +57,18 @@ if [ -z "$sid" ]; then
   # No session id in the payload — the same condition the hooks trip on.
   timer=" | ⚠ TRACKER OFF (no session id)"
 elif [ -n "$project_dir" ]; then
-  timer_file="$(tracker_state_root "$sid" "$project_dir")/.claude/sessions/$sid/timer-start"
+  state_root="$(tracker_state_root "$sid" "$project_dir")"
+  timer_file="$state_root/.claude/sessions/$sid/timer-start"
   # Default to the warning and let a readable timer-start replace it. A blank
   # slot is indistinguishable from a repo that never installed the Tracker, and
   # that ambiguity is what let untracked sessions run for hours unnoticed.
-  timer=" | ⚠ TRACKER OFF"
+  #
+  # Name the checkout that was searched (COY-523). A bare `TRACKER OFF` says a
+  # lane is missing but not from WHERE, and the two live causes look identical
+  # in it: no lane at all, versus a healthy lane in a checkout this resolution
+  # never reached. The basename is what separates them at a glance, and it is
+  # short enough not to crowd the line.
+  timer=" | ⚠ TRACKER OFF (no lane in $(basename "$state_root"))"
   if [ -f "$timer_file" ]; then
     start_epoch=$(cat "$timer_file" 2>/dev/null)
     if [ -n "$start_epoch" ] && [ "$start_epoch" -eq "$start_epoch" ] 2>/dev/null; then

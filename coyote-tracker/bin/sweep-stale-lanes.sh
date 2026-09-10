@@ -61,5 +61,24 @@ for lane in "$SESSIONS"/*/; do
     rm -rf "$lane"
   fi
 done
+
+# The lane-root index outlives the lanes it points at, and nothing else ever
+# deletes from it (COY-523). A dead entry is already harmless — the read side
+# revalidates and ignores it — so this is housekeeping, not correctness: drop
+# every entry whose recorded checkout no longer holds that session's lane,
+# including the ones this sweep just removed. The index is global rather than
+# per-repo, but each entry names an absolute root, so validating from here is
+# not repo-scoped and cannot delete another repo's live entry.
+if declare -f tracker_indexed_lane_root >/dev/null 2>&1; then
+  INDEX="$(tracker_lane_index_dir)"
+  for entry in "$INDEX"/*; do
+    [ -f "$entry" ] || continue
+    entry_id=$(basename "$entry")
+    [ "$entry_id" = "$SKIP_SID" ] && continue
+    if ! tracker_indexed_lane_root "$entry_id" >/dev/null 2>&1; then
+      rm -f "$entry"
+    fi
+  done
+fi
 shopt -u nullglob
 exit 0

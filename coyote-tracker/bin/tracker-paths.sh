@@ -22,6 +22,93 @@
 #   . "$BIN_DIR/tracker-paths.sh"
 #   DIR="$(tracker_state_root "$sid")/.claude"
 
+# tracker_lane_index_dir — where the session-id → state-root index lives.
+#
+# Deliberately OUTSIDE every checkout (COY-523). The index exists to answer
+# "which checkout holds this session's lane?" when no path the caller can offer
+# still points at one, and the two cases that produce that are exactly the cases
+# where anything stored inside a checkout is gone or unreachable: the worktree
+# the session was using has been removed, or the session has cd'd out of the
+# repo altogether. `$CLAUDE_CONFIG_DIR` is the right home because it is already
+# per-user, already outside the work tree, and already what the wrappers use to
+# find the plugin itself.
+tracker_lane_index_dir() {
+  printf '%s' "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/coyote-tracker/lane-roots"
+}
+
+# tracker_record_lane_root <sid> <root> — remember that <sid>'s lane lives in
+# <root>. Best-effort: a read-only or missing config dir must never break a
+# hook, so every failure is swallowed. Keyed by whatever the caller passed,
+# prefix included — a prefix key is still a useful hint, and the read side
+# revalidates before trusting it, so a stale or ambiguous entry cannot win.
+tracker_record_lane_root() {
+  local sid="${1:-}" root="${2:-}" dir
+  if [ -z "$sid" ] || [ -z "$root" ]; then return 0; fi
+  case "$sid" in */*|.|..) return 0 ;; esac  # never let a key escape the index dir
+  dir=$(tracker_lane_index_dir)
+  # tracker_state_root records on every positive resolution, and the statusline
+  # resolves on every render — so the common case by far is rewriting a file
+  # with the bytes it already holds. Read first and skip: the entry only ever
+  # changes when a session's lane actually moves checkouts.
+  if [ -r "$dir/$sid" ] && [ "$(cat "$dir/$sid" 2>/dev/null)" = "$root" ]; then return 0; fi
+  mkdir -p "$dir" 2>/dev/null || return 0
+  printf '%s\n' "$root" > "$dir/$sid" 2>/dev/null || true
+  return 0
+}
+
+# tracker_indexed_lane_root <sid> — the recorded root for <sid>, but only if it
+# STILL holds that session's lane. Revalidating is what makes the index safe to
+# consult: a recorded checkout that has since been deleted, or whose lane was
+# swept, is silently ignored rather than resurrected as a ghost path.
+#
+# <sid> may be the 8-char prefix, and it usually is on the paths that need this
+# most — `/aw`, `/bk` and worklog-split.sh are typed by hand with a prefix
+# (COY-517), while the entry was written by a hook holding the full id. So an
+# exact miss falls back to a prefix scan.
+#
+# Ambiguity is judged on the ROOTS, not the entries. A session accumulates one
+# entry per key it was ever resolved under — a prefix one and a full-id one —
+# and those name the same checkout; counting files would call that a collision
+# and throw away a correct answer. Two entries agreeing is not ambiguity. Two
+# genuinely different sessions sharing a prefix in different checkouts is, and
+# that still loses, exactly as it does in tracker_has_lane.
+tracker_indexed_lane_root() {
+  local sid="${1:-}" index entry root found="" had_nullglob
+  if [ -z "$sid" ]; then return 1; fi
+  case "$sid" in */*|.|..) return 1 ;; esac
+  index=$(tracker_lane_index_dir)
+  if [ ! -d "$index" ]; then return 1; fi
+
+  # Exact key first — the hook path, and the cheap one.
+  if [ -r "$index/$sid" ]; then
+    root=$(cat "$index/$sid" 2>/dev/null)
+    if [ -n "$root" ] && [ -d "$root" ] && tracker_has_lane "$root" "$sid"; then
+      printf '%s' "$root"; return 0
+    fi
+  fi
+
+  had_nullglob=off; if shopt -q nullglob; then had_nullglob=on; fi
+  shopt -s nullglob
+  for entry in "$index/$sid"*; do
+    [ -f "$entry" ] || continue
+    root=$(cat "$entry" 2>/dev/null) || continue
+    if [ -z "$root" ] || [ ! -d "$root" ]; then continue; fi
+    # Validate against the key the entry was FILED under, not the caller's:
+    # a full-id entry found via a prefix must be checked as that full id, or
+    # the prefix ambiguity rules would reject a lane that is not ambiguous.
+    if ! tracker_has_lane "$root" "$(basename "$entry")"; then continue; fi
+    if [ -z "$found" ]; then
+      found="$root"
+    elif [ "$found" != "$root" ]; then
+      found=""; break        # two live sessions, two checkouts — no answer
+    fi
+  done
+  if [ "$had_nullglob" = off ]; then shopt -u nullglob; fi
+
+  if [ -n "$found" ]; then printf '%s' "$found"; return 0; fi
+  return 1
+}
+
 # tracker_has_lanes <dir> — true when <dir> holds a non-empty lane directory.
 tracker_has_lanes() {
   if [ -z "${1:-}" ] || [ ! -d "$1/.claude/sessions" ]; then return 1; fi
@@ -107,23 +194,50 @@ tracker_main_checkout() {
 #   1. whichever candidate already holds THIS session's lane — so a session
 #      that predates this change, or one launched directly inside a worktree,
 #      keeps the lane it has instead of silently resetting its timer;
-#   2. the main checkout — the per-repo home, which is what stops the fork;
-#   3. the hint, when there is no main checkout to speak of (not a git repo,
+#   2. the recorded root, when it still holds the lane — the only step that can
+#      answer at all once the hint has stopped pointing into the repo (COY-523);
+#   3. the main checkout — the per-repo home, which is what stops the fork;
+#   4. the hint, when there is no main checkout to speak of (not a git repo,
 #      or a bare repo with no working tree).
+#
+# Step 2 is the COY-523 addition. The hint is not one stable value: hooks pass
+# `$CLAUDE_PROJECT_DIR`, which stays pinned to the launch checkout, while
+# statusline.sh passes the payload's `.workspace.project_dir`, which FOLLOWS the
+# session's cwd. Remove the worktree a session was working in — the routine end
+# of the worktree flow CLAUDE.md prescribes — and the session lands in `$HOME`;
+# the hint now names a deleted directory or no repo at all, `tracker_main_checkout`
+# returns nothing, and steps 3 and 4 have nothing to offer. Before COY-523 the
+# resolver handed back that dead hint, so the statusline printed `TRACKER OFF`
+# over a perfectly healthy lane, and the next `mkdir -p "$LANE"` in
+# user-prompt-hook.sh would have forked an empty one at the ghost path.
 tracker_state_root() {
-  local sid="${1:-}" hint="${2:-}" main=""
+  local sid="${1:-}" hint="${2:-}" main="" indexed=""
   if [ -z "$hint" ]; then
     hint="${CLAUDE_PROJECT_DIR:-}"
     if [ -z "$hint" ]; then hint=$(git rev-parse --show-toplevel 2>/dev/null || true); fi
     if [ -z "$hint" ]; then hint="$PWD"; fi
+  fi
+  # A hint that is not a directory is not a fallback, it is a ghost: returning
+  # it makes the caller's `mkdir -p` recreate a checkout that was deleted on
+  # purpose. Drop it and re-derive from where this process actually stands.
+  if [ ! -d "$hint" ]; then
+    hint="${CLAUDE_PROJECT_DIR:-}"
+    if [ ! -d "${hint:-}" ]; then hint=$(git rev-parse --show-toplevel 2>/dev/null || true); fi
+    if [ ! -d "${hint:-}" ]; then hint="$PWD"; fi
   fi
   main=$(tracker_main_checkout "$hint" 2>/dev/null || true)
 
   # if/then rather than `test && { … }`: these scripts run under `set -e`, where
   # a failing `&&` list is the statement that fails and would abort the caller.
   if [ -n "$sid" ]; then
-    if tracker_has_lane "$hint" "$sid"; then printf '%s' "$hint"; return 0; fi
-    if tracker_has_lane "$main" "$sid"; then printf '%s' "$main"; return 0; fi
+    if tracker_has_lane "$hint" "$sid"; then
+      tracker_record_lane_root "$sid" "$hint"; printf '%s' "$hint"; return 0
+    fi
+    if tracker_has_lane "$main" "$sid"; then
+      tracker_record_lane_root "$sid" "$main"; printf '%s' "$main"; return 0
+    fi
+    indexed=$(tracker_indexed_lane_root "$sid" 2>/dev/null || true)
+    if [ -n "$indexed" ]; then printf '%s' "$indexed"; return 0; fi
   fi
   if [ -n "$main" ]; then printf '%s' "$main"; return 0; fi
   printf '%s' "$hint"

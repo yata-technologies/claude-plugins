@@ -28,6 +28,13 @@ if ! command -v jq >/dev/null 2>&1; then
   exit 0
 fi
 
+# The lane-root index (COY-523) lives under CLAUDE_CONFIG_DIR, so an unguarded
+# run would write test session ids into the developer's real config dir — and,
+# worse, let an entry from one case leak into the next, since every case reuses
+# $SID against a fresh temp repo. Point the whole suite at a throwaway dir.
+SUITE_CFG=$(mktemp -d)
+export CLAUDE_CONFIG_DIR="$SUITE_CFG"
+
 SID=11111111-2222-4333-8444-555555555555
 SID2=11111111-2222-4333-8444-666666666666   # shares SID's 8-char prefix
 PFX=11111111                                # the prefix every wrapper documents
@@ -51,7 +58,7 @@ setup() {
   git -C "$MAIN" worktree add -q "$WT" -b wt
 }
 teardown() { [ -n "${ROOT:-}" ] && rm -rf "$ROOT"; }
-trap teardown EXIT
+trap 'teardown; rm -rf "$SUITE_CFG"' EXIT
 
 lane_of() { printf '%s/.claude/sessions/%s' "$1" "${2:-$SID}"; }
 
@@ -174,7 +181,15 @@ is "an unrelated session id still lands on the repo"  "$MAIN" "$(tracker_state_r
 mkdir -p "$(lane_of "$WT")"
 is "an empty worktree lane does not win"              "$MAIN" "$(tracker_state_root "$SID" "$WT")"
 NOTGIT=$(mktemp -d)
-is "a non-git directory falls back to itself" "$NOTGIT" "$(tracker_state_root "$SID" "$NOTGIT")"
+# An id the index has never seen: with no lane and no record, there is nothing
+# to resolve to but the hint itself. Using $SID here would not test that — the
+# lookups above recorded it, and COY-523 then answers from the index, which is
+# the point of the case below.
+is "a non-git directory falls back to itself" "$NOTGIT" "$(tracker_state_root "cafe0000" "$NOTGIT")"
+# COY-523 moved this boundary on purpose: a session whose lane WAS recorded is
+# found from a directory in no repo at all. That is the whole recovery path —
+# a session lands outside the repo the moment its worktree is removed.
+is "a non-git directory still recovers an indexed lane" "$MAIN" "$(tracker_state_root "$SID" "$NOTGIT")"
 rm -rf "$NOTGIT"
 teardown
 
@@ -226,16 +241,21 @@ echo "COY-517 — prefix resolver unit cases"
 setup
 . "$BIN/tracker-paths.sh"
 seed_lane "$WT"
+
+# Boundary, deliberately pinned — and narrowed by COY-523. It used to read
+# "only two candidates are ever considered, the hint and the main checkout, so
+# a sibling worktree's lane is invisible from main". The index adds a third,
+# but it is not the `git worktree list` scan that boundary was guarding
+# against: the index only ever returns the checkout where THIS session id was
+# already resolved, so an unrelated worktree still cannot claim a lane. What
+# changed is that a session's own lane follows it, which is the fix.
+#
+# Order matters here — resolving records — so the unrecorded case has to be
+# asserted before anything looks $PFX up.
+is "an unrecorded sibling lane is still invisible from main" "$MAIN" "$(tracker_state_root "$PFX" "$MAIN")"
 is "a prefix pins the checkout holding the lane" "$WT"   "$(tracker_state_root "$PFX" "$WT")"
 is "an unrelated prefix still lands on the repo"  "$MAIN" "$(tracker_state_root "9999999" "$WT")"
-
-# Boundary, deliberately pinned: only two candidates are ever considered — the
-# hint and the main checkout — so a lane in a SIBLING worktree is invisible from
-# the main checkout. Prefix support does not change that, and does not need to:
-# the hand-invoked path runs from the checkout you are standing in, which is the
-# hint. Widening this to scan every `git worktree list` entry is a bigger change
-# than COY-517 needs, and would make an unrelated worktree able to claim a lane.
-is "a sibling worktree's lane is not searched from main" "$MAIN" "$(tracker_state_root "$PFX" "$MAIN")"
+is "once recorded, the same session finds it from main" "$WT" "$(tracker_state_root "$PFX" "$MAIN")"
 
 # A prefix matching a lane that carries no state must not win, exactly as an
 # empty exact-id lane does not: user-prompt-hook.sh mkdir -p's before writing.
@@ -253,6 +273,144 @@ seed_lane "$MAIN"
 is "an ambiguous prefix does not win the checkout" "$MAIN" "$(tracker_state_root "$PFX" "$WT")"
 is "the full id still pins the worktree"           "$WT"   "$(tracker_state_root "$SID" "$WT")"
 teardown
+
+echo
+echo "COY-523 — the hint stops pointing into the repo (worktree removed, cwd left)"
+# COY-518 re-anchored the lane whenever the hint was a worktree OF THE SAME
+# REPO. It had no answer once the hint left the repo, and the worktree flow
+# CLAUDE.md prescribes ends by doing exactly that: `git worktree remove` deletes
+# the directory the session was standing in, so the session lands in $HOME. The
+# hooks kept working (they pass $CLAUDE_PROJECT_DIR, pinned to the launch
+# checkout) while statusline.sh — which passes the payload's project_dir, and
+# that FOLLOWS cwd — resolved to a deleted path and printed TRACKER OFF over a
+# healthy lane. Observed 2026-09-10 on a live coyote session.
+#
+# Each case below asserts the resolved checkout, not merely "a lane was found":
+# returning the dead hint is what would let a caller's `mkdir -p` recreate the
+# removed worktree as a ghost and fork an empty lane inside it.
+
+# The index lives under CLAUDE_CONFIG_DIR; give every case its own so the suite
+# cannot pass on an entry left behind by the developer's real sessions.
+new_index() { CLAUDE_CONFIG_DIR=$(mktemp -d); export CLAUDE_CONFIG_DIR; }
+drop_index() {
+  case "${CLAUDE_CONFIG_DIR:-}" in "$SUITE_CFG"|"") ;; *) rm -rf "$CLAUDE_CONFIG_DIR" ;; esac
+  export CLAUDE_CONFIG_DIR="$SUITE_CFG"
+}
+
+setup
+new_index
+. "$BIN/tracker-paths.sh"
+seed_lane "$MAIN"
+GONE="$ROOT/repo-removed"
+
+# One turn while the worktree still exists is what records the index — the same
+# hook traffic any real session generates before it cleans the worktree up.
+prompt_payload "$WT" | CLAUDE_PROJECT_DIR="$WT" CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" \
+  "$BIN/user-prompt-hook.sh" >/dev/null 2>&1
+is "the lane root was indexed while the worktree lived" "$MAIN" \
+   "$(cat "$CLAUDE_CONFIG_DIR/coyote-tracker/lane-roots/$SID" 2>/dev/null)"
+
+git -C "$MAIN" worktree remove --force "$WT" 2>/dev/null || rm -rf "$WT"
+is "the worktree really is gone" "absent" \
+   "$([ -d "$WT" ] && echo present || echo absent)"
+
+# The payload after the removal: cwd is $HOME-like (outside any repo) and
+# project_dir still names the deleted worktree.
+line=$(printf '{"session_id":"%s","cwd":"%s","workspace":{"current_dir":"%s","project_dir":"%s"}}' \
+         "$SID" "$ROOT" "$ROOT" "$WT" \
+       | CLAUDE_PROJECT_DIR="$GONE" CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" "$BIN/statusline.sh")
+case "$line" in
+  *"TRACKER OFF"*) bad "statusline keeps the timer after the worktree is removed" "TIMER …" "$line" ;;
+  *TIMER*)         ok  "statusline keeps the timer after the worktree is removed" ;;
+  *)               bad "statusline keeps the timer after the worktree is removed" "TIMER …" "$line" ;;
+esac
+
+is "resolver recovers the lane from a deleted hint" "$MAIN" "$(tracker_state_root "$SID" "$WT")"
+is "resolver recovers the lane from outside any repo" "$MAIN" "$(tracker_state_root "$SID" "$ROOT")"
+is "the 8-char prefix recovers it too"                "$MAIN" "$(tracker_state_root "$PFX" "$WT")"
+is "no ghost checkout was recreated" "absent" "$([ -d "$WT" ] && echo present || echo absent)"
+
+# The write path is the one that loses data, so exercise it, not just the read.
+out=$(printf '{"session_id":"%s","prompt":"hello","cwd":"%s"}' "$SID" "$ROOT" \
+      | CLAUDE_PROJECT_DIR="$GONE" CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" \
+        "$BIN/user-prompt-hook.sh" 2>/dev/null)
+is "the turn still lands in the surviving lane" "3" \
+   "$(grep -c AI_START "$(lane_of "$MAIN")/turn-log")"
+is "timer-start is not reset"        "$START" "$(cat "$(lane_of "$MAIN")/timer-start")"
+is "the main checkout holds one lane" "1"     "$(count_lanes "$MAIN")"
+is "no lane was forked at the ghost path" "absent" \
+   "$([ -d "$WT" ] || [ -d "$GONE" ] && echo present || echo absent)"
+case "$out" in
+  *"elapsed --:--:--"*) bad "the prepend still carries a real elapsed" "elapsed HH:MM:SS" "elapsed --:--:--" ;;
+  *"elapsed "*)         ok  "the prepend still carries a real elapsed" ;;
+  *)                    bad "the prepend still carries a real elapsed" "an elapsed field" "$out" ;;
+esac
+drop_index; teardown
+
+echo
+echo "COY-523 — the index must not manufacture a lane that is not there"
+# The index is only ever allowed to REDISCOVER a lane. If it could assert one,
+# it would trade a visible TRACKER OFF for an invisible wrong answer — the
+# warning is load-bearing, and suppressing it is what COY-402 was filed about.
+setup
+new_index
+. "$BIN/tracker-paths.sh"
+seed_lane "$MAIN"
+is "an entry is recorded"      "$MAIN" "$(tracker_state_root "$SID" "$MAIN")"
+
+rm -rf "$(lane_of "$MAIN")"    # the lane is swept; the entry still points here
+is "a stale entry is ignored once the lane is gone" "$MAIN" "$(tracker_state_root "$SID" "$WT")"
+line=$(status_payload "$WT" | CLAUDE_PROJECT_DIR="$WT" CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" "$BIN/statusline.sh")
+case "$line" in
+  *"TRACKER OFF"*) ok  "statusline warns again when the lane is genuinely gone" ;;
+  *)               bad "statusline warns again when the lane is genuinely gone" "TRACKER OFF" "$line" ;;
+esac
+case "$line" in
+  *"no lane in "*) ok  "the warning names the checkout it searched" ;;
+  *)               bad "the warning names the checkout it searched" "no lane in <dir>" "$line" ;;
+esac
+
+# An entry pointing at a checkout that no longer exists must not be handed back
+# as a path — that is precisely the ghost the resolver used to return.
+printf '%s\n' "$ROOT/never-existed" > "$CLAUDE_CONFIG_DIR/coyote-tracker/lane-roots/$SID"
+is "an entry naming a deleted checkout is ignored" "$MAIN" "$(tracker_state_root "$SID" "$WT")"
+drop_index; teardown
+
+echo
+echo "COY-523 — the resolver never returns a path that does not exist"
+setup
+new_index
+. "$BIN/tracker-paths.sh"
+GONE="$ROOT/never-existed"
+for r in "$(tracker_state_root "$SID" "$GONE")" "$(tracker_state_root "" "$GONE")"; do
+  is "resolved root exists ($r)" "present" "$([ -d "$r" ] && echo present || echo absent)"
+done
+drop_index; teardown
+
+echo
+echo "COY-523 — the sweep prunes index entries it has invalidated"
+setup
+new_index
+. "$BIN/tracker-paths.sh"
+seed_lane "$MAIN"
+tracker_state_root "$SID" "$MAIN" >/dev/null
+ENTRY="$CLAUDE_CONFIG_DIR/coyote-tracker/lane-roots/$SID"
+is "the entry exists before the sweep" "present" "$([ -f "$ENTRY" ] && echo present || echo absent)"
+
+# Age the lane past the threshold so the sweep collects it.
+touch -d '3 days ago' "$(lane_of "$MAIN")/last-active" 2>/dev/null \
+  || touch -t 200001010000 "$(lane_of "$MAIN")/last-active"
+CLAUDE_PROJECT_DIR="$MAIN" CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" "$BIN/sweep-stale-lanes.sh" >/dev/null 2>&1
+is "the stale lane is swept"           "0"      "$(count_lanes "$MAIN")"
+is "its index entry is pruned too" "absent" "$([ -f "$ENTRY" ] && echo present || echo absent)"
+
+# A live lane's entry must survive the same sweep.
+seed_lane "$MAIN" "$SID2"
+tracker_state_root "$SID2" "$MAIN" >/dev/null
+CLAUDE_PROJECT_DIR="$MAIN" CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" "$BIN/sweep-stale-lanes.sh" >/dev/null 2>&1
+is "a live lane's entry survives" "present" \
+   "$([ -f "$CLAUDE_CONFIG_DIR/coyote-tracker/lane-roots/$SID2" ] && echo present || echo absent)"
+drop_index; teardown
 
 echo
 printf '%d passed, %d failed\n' "$pass" "$fail"
