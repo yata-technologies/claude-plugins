@@ -111,6 +111,13 @@ coyote-tracker/
   `.claude/sessions/` (runtime lanes — anchored on the **repo**, i.e. the main checkout, not
   the current `git worktree`; COY-518), `.claude/coyote-tracker.config` (backend + IDs),
   `docs/<date>-<key>-worklog-config.md`.
+- **One pointer lives outside every checkout**: `${CLAUDE_CONFIG_DIR:-~/.claude}/coyote-tracker/lane-roots/<session-id>`
+  records which checkout holds that session's lane (COY-523). It exists because the paths a
+  caller can offer — `$CLAUDE_PROJECT_DIR` for hooks, the payload's `project_dir` for the
+  statusline, which follows cwd — both stop pointing into the repo the moment the session's
+  worktree is removed. Purely a rediscovery hint: every read revalidates that the recorded
+  checkout still holds the lane, so a stale entry is ignored rather than trusted, and
+  `sweep-stale-lanes.sh` prunes the dead ones.
 
 ### Auto-update mechanism (maintainer notes)
 

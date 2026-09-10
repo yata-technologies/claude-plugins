@@ -65,11 +65,21 @@ else
   tracker_state_root() {
     printf '%s' "${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
   }
+  # No helper means no index either; the lane-creation sites below call this
+  # unconditionally, so give them a no-op rather than a "command not found"
+  # on every turn (COY-523).
+  tracker_record_lane_root() { :; }
 fi
 STATE_DIR="$(tracker_state_root "$sid")/.claude"
 LANE="$STATE_DIR/sessions/$sid"
 LOG="$LANE/turn-log"
 mkdir -p "$LANE"
+# Record which checkout this session's lane landed in, so it can still be
+# found after the hint stops pointing here — the worktree removed, or the
+# session cd'd out of the repo (COY-523). Doing it at the creation site
+# rather than leaving it to the resolver closes the first-turn gap, when no
+# lane exists yet for the resolver to have recognised.
+tracker_record_lane_root "$sid" "${STATE_DIR%/.claude}"
 
 touch "$LANE/last-active"
 
