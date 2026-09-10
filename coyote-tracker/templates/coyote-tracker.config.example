@@ -27,6 +27,27 @@ issue_update_tool=mcp__coyote__coyote_update_issue
 # the server-generated slug for the "just created — flip it now" nudge.
 task_slug_pattern=[A-Z][A-Z0-9]+-T[0-9]+
 
+# --- Worklog provenance (COY-522) ------------------------------------------
+# The pre-worklog hook stamps every create with the CLI session id that produced
+# it (agent_session_id) plus the name of the tool that recorded it, so a worklog
+# can later be cross-referenced against its agent session. Without them a
+# Tracker-recorded worklog is indistinguishable from one typed into the web form.
+#
+# agent_source names the PRODUCING TOOL — not the model, not the MCP client.
+# Override it only if you ship this plugin under another name.
+#
+# ⚠️ Both fields are sent as Coyote MCP parameter names, and the Coyote MCP
+# REJECTS unknown parameters rather than ignoring them. A backend that does not
+# know these two will fail every worklog create, so a non-Coyote backend needs
+# the field-mapping layer noted in pre-worklog-hook.sh before pointing
+# backend_tool elsewhere. Both are write-once server-side — set on create only.
+agent_source=coyote-tracker
+
+# Regex (ERE) matching a worklog slug in the create-worklog response. The
+# created worklog's own slug is recorded to the session lane
+# (worklog-slugs-this-session); Coyote slugs carry a W where tasks carry a T.
+worklog_slug_pattern=[A-Z][A-Z0-9]+-W[0-9]+
+
 # Status vocabulary. status_closed is a comma-separated set; the others are
 # single values. These are the literal strings your backend's status field takes.
 status_not_started=not_started
