@@ -67,13 +67,22 @@ The plugin is **not** stored in the repo — it lives in **your own machine-loca
 machine, and two teammates can briefly be on different versions of the same repo.
 
 You don't manage this. On session start the plugin quietly runs its updater
-(`bin/self-update.sh`) — background, best-effort, **at most once every 12h** — which
+(`bin/self-update.sh`) — background, best-effort, **at most once an hour** — which
 refreshes the marketplace and pulls the newest release into your cache. A plugin update
 **applies on your next session restart**, never mid-session, so you're effectively always
 one session behind the latest release with zero effort.
 
-- **Opt out / tune** with `COYOTE_TRACKER_UPDATE_THROTTLE=0` (disable) or a different
-  second-count (change the window).
+- **Tune the window** with `COYOTE_TRACKER_UPDATE_THROTTLE` (seconds, default `3600`).
+  It is read from the session environment, so set it in the `env` block of **your own
+  settings** (`$CLAUDE_CONFIG_DIR/settings.json`, usually `~/.claude/settings.json`) to
+  change it for every consumer repo on this machine, or in a **repo's**
+  `.claude/settings.json` to change it for that repo alone.
+- **`0` disables the updater entirely** — it does *not* mean "check every time". There is
+  no "always" setting, and there shouldn't be: the throttle stamp lives under the project
+  dir, so parallel worktrees each carry their own, and a near-zero window would let
+  concurrent `claude plugin update` runs collide on the single shared
+  `installed_plugins.json`. Since an update only lands on the next restart anyway,
+  sub-hour freshness buys nothing (COY-526).
 - **Already on an old pinned version?** A copy installed *before* the self-updater existed
   (pre-`0.5.0`) can't pull itself forward. Bootstrap it **once**, from the repo's own
   directory, then restart:
