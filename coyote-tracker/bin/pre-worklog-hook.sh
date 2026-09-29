@@ -170,7 +170,14 @@ fi
 
 # Canonical split at call time. Fail open — never block a worklog if the split
 # script hiccups.
-split_out=$("$BIN_DIR/worklog-split.sh" "$sid" 2>/dev/null) || exit 0
+split_err=$(mktemp "${TMPDIR:-/tmp}/coyote-split-err-XXXXXX")
+split_out=$("$BIN_DIR/worklog-split.sh" "$sid" 2>"$split_err") || { rm -f "$split_err"; exit 0; }
+# Surface how the engine resolved an irregular turn-log (turns with no AI_END,
+# an away closed by a prompt instead of `bk`, or a broken invariant) rather
+# than discarding it: these are exactly the sessions whose split an author
+# would otherwise second-guess and override by hand (COY-537).
+engine_note=$(grep -E 'INVARIANT|COY-537' "$split_err" | sed 's/^\[worklog-split\] WARNING: //' | tr '\n' ' ' || true)
+rm -f "$split_err"
 IFS=$'\t' read -r exp_total exp_ai exp_human _ai_fmt _human_fmt exp_auto exp_start <<< "$split_out"
 [ -n "${exp_ai:-}" ] && [ -n "${exp_human:-}" ] || exit 0
 exp_auto="${exp_auto:-0}"
@@ -207,8 +214,10 @@ out=$(printf '%s' "$input" | jq -c \
   --arg sidshort "$sid_short" \
   --arg agentsid "$sid" \
   --arg agentsrc "$agent_source" \
+  --arg engnote "$engine_note" \
   '.tool_input as $ti |
-   (if $auto > 0 then " ⚠️ Auto-away: \($auto)s of idle time was reclassified out of Human by the idle cap — the timer was preserved (no /clear, and no /bk since no /aw was ever opened). Tell the human plainly that this idle stretch was excluded from Human time; if it was actually working time, they can re-log with an explicit worklog-split-override." else "" end) as $autonote | {
+   (if $auto > 0 then " ⚠️ Auto-away: \($auto)s of idle time was reclassified out of Human by the idle cap — the timer was preserved (no /clear, and no /bk since no /aw was ever opened). Tell the human plainly that this idle stretch was excluded from Human time; if it was actually working time, they can re-log with an explicit worklog-split-override." else "" end) as $autonote |
+   (if $engnote != "" then " ⚠️ Split engine: \($engnote)Tell the human how these were resolved in one line." else "" end) as $engnote | {
      hookSpecificOutput: {
        hookEventName: "PreToolUse",
        permissionDecision: "allow",
@@ -220,7 +229,7 @@ out=$(printf '%s' "$input" | jq -c \
          agent_session_id: $agentsid,
          agent_source: $agentsrc
        }),
-       additionalContext: ("Coyote Tracker (\($sidshort)): canonical split injected by pre-worklog-hook — seconds=\($sec), time_ai_seconds=\($ai), time_human_seconds=\($hu), start_time=\($st) (raw window total=\($total)s). Report THESE figures to the human in your closing message. Do NOT run worklog-split.sh — the hook is the source of truth for this session'"'"'s lane. Provenance was injected too (agent_source=\($agentsrc), agent_session_id=\($agentsid)) — do not pass either yourself, and do not report them as part of the split.\($autonote)")
+       additionalContext: ("Coyote Tracker (\($sidshort)): canonical split injected by pre-worklog-hook — seconds=\($sec), time_ai_seconds=\($ai), time_human_seconds=\($hu), start_time=\($st) (raw window total=\($total)s). Report THESE figures to the human in your closing message. Do NOT run worklog-split.sh — the hook is the source of truth for this session'"'"'s lane. Provenance was injected too (agent_source=\($agentsrc), agent_session_id=\($agentsid)) — do not pass either yourself, and do not report them as part of the split.\($autonote)\($engnote)")
      }
    }' 2>/dev/null) || exit 0
 
