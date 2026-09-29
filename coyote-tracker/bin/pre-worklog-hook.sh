@@ -40,18 +40,34 @@
 # So: if you add a field here, check the MCP accepts it in a version the fleet
 # already has. Do not assume unknown fields are ignored anywhere in this chain.
 #
-# Passthrough (agent's own values honored, no injection):
+# Split provenance (COY-538). Every rewrite also stamps split_source — how the
+# split was produced — because downstream reads time_ai_seconds as a
+# measurement, and since 0.8.0 about a quarter of AI-assisted worklogs carry a
+# hand-set split whose only record was free text:
+#   mechanical — the canonical split below, injected unchanged
+#   stitched   — canonical, but spanning a predecessor lane (COY-402)
+#   override   — the override marker was consumed; the agent's figures are kept
+#                and the lane's measurement goes alongside as canonical_seconds /
+#                canonical_ai_seconds, so the gap is a column comparison
+# ⚠️ These three keys REQUIRE Coyote MCP >= 1.33.0 — same reasoning as above.
+#
+# Override (agent's own split honored):
 #   - override marker present ($LANE/worklog-split-override) — explicit human
 #     override for a backfill / sub-window record. One-shot: deleted on
-#     consumption so the next call re-engages injection.
-#   - worklog-split.sh fails for any reason — fail open, never block a log.
+#     consumption so the next call re-engages injection. The split is NOT
+#     rewritten, but provenance and split_source=override are stamped.
 #
-#   Neither passthrough path stamps provenance, deliberately. Emitting an
-#   updatedInput there would mean also emitting permissionDecision "allow",
-#   which would newly auto-approve calls those paths currently leave to the
-#   normal permission flow — a bigger behavioural change than the provenance is
-#   worth on two rare branches. Such worklogs land with NULL provenance, which
-#   consumers must already tolerate (see the ambiguity note in COY-522).
+#     Up to 0.12.x this path passed through untouched, because stamping means an
+#     updatedInput and therefore permissionDecision "allow" — judged not worth it
+#     on a rare branch. COY-520 measured it at 23% of AI-assisted worklogs, and
+#     it is precisely the population split_source exists to label, so it now
+#     stamps. "allow" here approves nothing the mechanical path does not already
+#     approve (the same tool, after the human agreed to the override).
+#
+# Passthrough (agent's own values honored, no injection):
+#   - worklog-split.sh fails for any reason on the mechanical path — fail open,
+#     never block a log. Lands with NULL provenance, which consumers must
+#     already tolerate (see the ambiguity note in COY-522).
 #
 # Denied (COY-402):
 #   - untracked window — no timer-start or no turn-log in the lane. There is no
@@ -130,10 +146,43 @@ fi
 STATE_DIR="$(tracker_state_root "$sid")/.claude"
 LANE="$STATE_DIR/sessions/$sid"
 
-# Explicit human override (backfill, sub-window) — honor the agent's values.
-# One-shot: consume the marker so the next call re-engages injection.
+# Explicit human override (backfill, sub-window) — honor the agent's split.
+# One-shot: consume the marker so the next call re-engages injection. The split
+# is left alone, but the row says it was overridden and carries the lane's
+# measurement next to it (COY-538). With no lane there is no measurement, so the
+# canonical pair is omitted (the Worker requires both halves or neither).
 if [ -f "$LANE/worklog-split-override" ]; then
   rm -f "$LANE/worklog-split-override"
+  canon_json='{}'
+  if [ -f "$LANE/timer-start" ] && [ -f "$LANE/turn-log" ]; then
+    ov_out=$("$BIN_DIR/worklog-split.sh" "$sid" 2>/dev/null || true)
+    IFS=$'\t' read -r _t ov_ai ov_human _rest <<< "$ov_out"
+    if [[ "${ov_ai:-}" =~ ^[0-9]+$ ]] && [[ "${ov_human:-}" =~ ^[0-9]+$ ]]; then
+      canon_json=$(jq -cn --argjson s "$(( ov_ai + ov_human ))" --argjson a "$ov_ai" \
+        '{canonical_seconds: $s, canonical_ai_seconds: $a}')
+    fi
+  fi
+  out=$(printf '%s' "$input" | jq -c \
+    --arg agentsid "$sid" \
+    --arg agentsrc "$agent_source" \
+    --arg sidshort "${sid:0:8}" \
+    --argjson canon "$canon_json" \
+    '.tool_input as $ti | {
+       hookSpecificOutput: {
+         hookEventName: "PreToolUse",
+         permissionDecision: "allow",
+         updatedInput: ($ti + {
+           agent_session_id: $agentsid,
+           agent_source: $agentsrc,
+           split_source: "override"
+         } + $canon),
+         additionalContext: ("Coyote Tracker (\($sidshort)): worklog-split-override consumed — your split was kept as given and recorded as split_source=override"
+           + (if ($canon | has("canonical_seconds")) then ", with the lane measurement alongside (canonical_seconds=\($canon.canonical_seconds), canonical_ai_seconds=\($canon.canonical_ai_seconds))" else " (no lane measurement to record)" end)
+           + ". Say in the description why the split was overridden. Do not pass split_source or canonical_* yourself.")
+       }
+     }' 2>/dev/null) || exit 0
+  [ -n "$out" ] || exit 0
+  printf '%s' "$out"
   exit 0
 fi
 
@@ -177,6 +226,10 @@ split_out=$("$BIN_DIR/worklog-split.sh" "$sid" 2>"$split_err") || { rm -f "$spli
 # than discarding it: these are exactly the sessions whose split an author
 # would otherwise second-guess and override by hand (COY-537).
 engine_note=$(grep -E 'INVARIANT|COY-537' "$split_err" | sed 's/^\[worklog-split\] WARNING: //' | tr '\n' ' ' || true)
+# COY-538: a stitched split is still a measurement, but of two lanes — recorded
+# as its own split_source so a consumer can tell it apart.
+split_source=mechanical
+grep -q 'stitched in predecessor lane' "$split_err" && split_source=stitched
 rm -f "$split_err"
 IFS=$'\t' read -r exp_total exp_ai exp_human _ai_fmt _human_fmt exp_auto exp_start <<< "$split_out"
 [ -n "${exp_ai:-}" ] && [ -n "${exp_human:-}" ] || exit 0
@@ -214,6 +267,7 @@ out=$(printf '%s' "$input" | jq -c \
   --arg sidshort "$sid_short" \
   --arg agentsid "$sid" \
   --arg agentsrc "$agent_source" \
+  --arg splitsrc "$split_source" \
   --arg engnote "$engine_note" \
   '.tool_input as $ti |
    (if $auto > 0 then " ⚠️ Auto-away: \($auto)s of idle time was reclassified out of Human by the idle cap — the timer was preserved (no /clear, and no /bk since no /aw was ever opened). Tell the human plainly that this idle stretch was excluded from Human time; if it was actually working time, they can re-log with an explicit worklog-split-override." else "" end) as $autonote |
@@ -227,9 +281,10 @@ out=$(printf '%s' "$input" | jq -c \
          time_human_seconds: $hu,
          start_time: $st,
          agent_session_id: $agentsid,
-         agent_source: $agentsrc
+         agent_source: $agentsrc,
+         split_source: $splitsrc
        }),
-       additionalContext: ("Coyote Tracker (\($sidshort)): canonical split injected by pre-worklog-hook — seconds=\($sec), time_ai_seconds=\($ai), time_human_seconds=\($hu), start_time=\($st) (raw window total=\($total)s). Report THESE figures to the human in your closing message. Do NOT run worklog-split.sh — the hook is the source of truth for this session'"'"'s lane. Provenance was injected too (agent_source=\($agentsrc), agent_session_id=\($agentsid)) — do not pass either yourself, and do not report them as part of the split.\($autonote)\($engnote)")
+       additionalContext: ("Coyote Tracker (\($sidshort)): canonical split injected by pre-worklog-hook — seconds=\($sec), time_ai_seconds=\($ai), time_human_seconds=\($hu), start_time=\($st) (raw window total=\($total)s). Report THESE figures to the human in your closing message. Do NOT run worklog-split.sh — the hook is the source of truth for this session'"'"'s lane. Provenance was injected too (agent_source=\($agentsrc), agent_session_id=\($agentsid), split_source=\($splitsrc)) — do not pass any of them yourself, and do not report them as part of the split.\($autonote)\($engnote)")
      }
    }' 2>/dev/null) || exit 0
 
