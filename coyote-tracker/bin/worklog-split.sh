@@ -23,6 +23,12 @@
 # Total seconds = (now − timer-start) − Away
 # Human seconds = Total − AI
 #
+# These are computed by one walk that assigns every second of the window to
+# exactly one bucket, so AI + Human + Away == now − timer-start always holds;
+# a violation is reported on stderr, never silently clamped (COY-537). How
+# turns with no AI_END and away intervals with no `bk` are resolved is
+# documented at the walk below.
+#
 # Auto-away for long idle gaps (COY — preserve idle sessions):
 #   A "human gap" is any stretch inside [timer-start, now] where neither an AI
 #   turn nor an explicit away interval is open — i.e. the human is reading,
@@ -112,7 +118,8 @@ log_file="$LANE/turn-log"
 [ -f "$log_file" ]   || { echo "no turn-log in $LANE"   >&2; exit 1; }
 
 start=$(cat "$timer_file")
-now=$(date +%s)
+# TRACKER_SPLIT_NOW pins "now" for the tests; nothing in production sets it.
+now="${TRACKER_SPLIT_NOW:-$(date +%s)}"
 
 # --- session-id chain: adopt the predecessor lane, or prove it must not be (COY-402) ---
 #
@@ -157,68 +164,122 @@ fi
 idle_cap_min="${CLAUDE_IDLE_CAP_MIN:-30}"
 cap_sec=$(( idle_cap_min * 60 ))
 
-read -r ai away auto_away <<EOF
-$(awk -v s="$start" -v n="$now" -v cap="$cap_sec" '
-  # Close a human gap [gs, ge] (neither AI nor away open): keep up to cap
-  # seconds as Human, reclassify the excess as auto-away.
-  function record_gap(gs, ge,   len) {
-    if (cap > 0 && ge > gs) {
-      len = ge - gs
-      if (len > cap) auto_away += (len - cap)
+# The turn-log is walked as ONE timeline in which every second of [start, now]
+# belongs to exactly one of: an AI turn, an explicit away interval, or a human
+# gap (whose excess over the cap becomes auto-away). A segment is closed at the
+# moment the state changes, so no span can be measured twice (COY-537). Rules
+# for the ambiguous shapes:
+#
+#   - Stale turn: an AI_START with no AI_END before the next AI_START (the human
+#     pressed Esc — the Stop hook does not fire on an interrupt). How long the AI
+#     actually ran is unknowable, so the stale turn stays part of the surrounding
+#     human gap, which the idle cap then bounds. Up to 0.12.0 each such AI_START
+#     re-measured the gap from the same last-busy point, so an overnight break
+#     before a run of interrupted turns became auto-away once PER TURN — away
+#     exceeded the window and the split collapsed to total=0 / human=0.
+#   - AI_START while away is open (`aw`, then a plain prompt instead of `bk`):
+#     the prompt IS the return, so it closes the away implicitly. A later `bk`
+#     is then an orphan and falls under the COY-136 clamp below. Up to 0.12.0
+#     that `bk` closed the away across every AI turn in between, counting them
+#     as both AI and away.
+#   - AWAY_START during a turn: the AI keeps the overlap (same rule as the
+#     COY-136 clamp) — the away begins at that turn's AI_END. If the turn never
+#     ends it was stale, and the away begins at AWAY_START.
+#   - Unmatched AWAY_END: the human gap since the last AI_END becomes away
+#     (COY-136 clamp to AI_END). With no AI_END to clamp to, nothing is counted.
+#
+# Lines are sorted by epoch first: a stitched predecessor log (COY-402) is
+# concatenated, not merged. Markers before `start` are ignored as before, and
+# markers after `now` (clock skew) are pulled back to `now`.
+read -r ai away auto_away human_gap <<EOF
+$(sort -s -n -k2,2 "$log_file" | awk -v s="$start" -v n="$now" -v cap="$cap_sec" '
+  # Close a human gap [gs, ge]: keep up to cap seconds as Human, reclassify
+  # the excess as auto-away.
+  function gap(gs, ge,   len) {
+    if (ge <= gs) return
+    len = ge - gs
+    if (cap > 0 && len > cap) { auto_away += len - cap; hgap += cap } else hgap += len
+  }
+  function stale_turn() { stale++; if (!stale_at) stale_at = u }
+  BEGIN { st = "human"; hs = s; ai = 0; away = 0; auto_away = 0; hgap = 0 }
+  $1 !~ /^(AI_START|AI_END|AWAY_START|AWAY_END)$/ || $2 !~ /^[0-9]+$/ { next }
+  $2 < s { next }
+  {
+    t = ($2 > n) ? n : $2 + 0
+    if ($1 == "AI_START") {
+      if (st == "human") {
+        u = t; st = "ai"
+      } else if (st == "ai") {
+        # Previous turn never closed; its span stays in the human gap from hs.
+        stale_turn()
+        if (pend) { gap(hs, pend); away += t - pend; hs = t; pend = 0; implicit++ }
+        u = t
+      } else {
+        away += t - as; hs = t; u = t; st = "ai"; implicit++
+      }
+    } else if ($1 == "AI_END") {
+      if (st == "ai") {
+        gap(hs, u); ai += t - u; last_ai_end = t
+        hs = t
+        if (pend) { st = "away"; as = t; pend = 0 } else st = "human"
+      }
+      # An AI_END outside a turn (duplicate, ack-turn quirk) carries no time.
+    } else if ($1 == "AWAY_START") {
+      if (st == "human") { gap(hs, t); as = t; hs = t; st = "away" }
+      else if (st == "ai" && !pend) pend = t
+      # AWAY_START while already away: keep the first.
+    } else if ($1 == "AWAY_END") {
+      if (st == "away") {
+        away += t - as; hs = t; st = "human"
+      } else if (st == "ai" && pend) {
+        # aw/bk around a turn that never closed: the turn was stale.
+        stale_turn(); gap(hs, pend); away += t - pend; hs = t; pend = 0; st = "human"
+      } else if (last_ai_end > 0 && t > hs) {
+        if (st == "ai") stale_turn()
+        printf "[worklog-split] WARNING: unmatched AWAY_END at epoch %d — synthesized AWAY_START at preceding AI_END epoch %d (mid-turn aw injection, COY-136). Reconstructed %ds of away time.\n", t, hs, (t - hs) > "/dev/stderr"
+        away += t - hs; hs = t; st = "human"
+      } else {
+        printf "[worklog-split] WARNING: unmatched AWAY_END at epoch %d with no preceding AI_END to clamp to — away time not counted (COY-136). If a real away interval was missed, manually adjust via worklog-split-override.\n", t > "/dev/stderr"
+      }
     }
-  }
-  BEGIN { last_busy_end = s }
-  $1=="AI_START" && $2>=s {
-    record_gap(last_busy_end, $2)
-    u=$2
-  }
-  $1=="AI_END" && $2>=s {
-    if (u>0) ai += ($2 - u)
-    u=0
-    last_ai_end=$2
-    if ($2 > last_busy_end) last_busy_end=$2
-  }
-  $1=="AWAY_START" && $2>=s {
-    record_gap(last_busy_end, $2)
-    if (a==0) a=$2
-  }
-  $1=="AWAY_END" && $2>=s {
-    if (a>0) {
-      away += ($2 - a)
-      if ($2 > last_busy_end) last_busy_end=$2
-    } else if (last_ai_end>0 && $2>last_ai_end) {
-      away += ($2 - last_ai_end)
-      if ($2 > last_busy_end) last_busy_end=$2
-      printf "[worklog-split] WARNING: unmatched AWAY_END at epoch %d — synthesized AWAY_START at preceding AI_END epoch %d (mid-turn aw injection, COY-136). Reconstructed %ds of away time.\n", $2, last_ai_end, ($2 - last_ai_end) > "/dev/stderr"
-    } else {
-      printf "[worklog-split] WARNING: unmatched AWAY_END at epoch %d with no preceding AI_END to clamp to — away time not counted (COY-136). If a real away interval was missed, manually adjust via worklog-split-override.\n", $2 > "/dev/stderr"
-    }
-    a=0
   }
   END {
-    if (u>0 && n>u) {
-      # Open AI turn runs to now — the tail is AI, not a human gap.
-      ai += (n - u)
+    if (st == "ai") {
+      # Open AI turn runs to now — normally the very turn writing the worklog.
+      gap(hs, u); ai += n - u
     } else {
-      # No turn in flight — the tail [last_busy_end, now] is a human gap.
-      record_gap(last_busy_end, n)
+      if (st == "away") {
+        printf "[worklog-split] WARNING: unmatched AWAY_START at epoch %d (no AWAY_END seen) — open away interval ignored. If you returned, send `bk` between turns to close it (COY-136).\n", as > "/dev/stderr"
+      }
+      gap(hs, n)
     }
-    if (a>0) {
-      printf "[worklog-split] WARNING: unmatched AWAY_START at epoch %d (no AWAY_END seen) — open away interval ignored. If you returned, send `bk` between turns to close it (COY-136).\n", a > "/dev/stderr"
+    if (stale > 0) {
+      printf "[worklog-split] WARNING: %d AI turn(s) had no AI_END (interrupted — the Stop hook does not fire on Esc), first at epoch %d. Their span was counted as human gap time, bounded by the idle cap (COY-537).\n", stale, stale_at > "/dev/stderr"
     }
-    if (auto_away>0) {
+    if (implicit > 0) {
+      printf "[worklog-split] WARNING: %d away interval(s) were closed by the next prompt rather than `bk` — treated as an implicit return at that prompt (COY-537).\n", implicit > "/dev/stderr"
+    }
+    if (auto_away > 0) {
       printf "[worklog-split] WARNING: %ds of idle time across long gaps reclassified as away (idle cap %ds, COY). The timer was preserved — no /clear needed. If this was real Human work, adjust via worklog-split-override.\n", auto_away, cap > "/dev/stderr"
     }
-    printf "%d %d %d\n", (ai?ai:0), (away?away:0), (auto_away?auto_away:0)
+    printf "%d %d %d %d\n", ai, away, auto_away, hgap
   }
-' "$log_file")
+')
 EOF
 
 away_total=$(( away + auto_away ))
 total=$((now - start - away_total))
-[ "$total" -lt 0 ] && total=0
 human=$((total - ai))
-[ "$human" -lt 0 ] && human=0
+
+# The walk partitions the window, so this holds by construction. If it ever
+# fails, say so loudly rather than clamping it away — a silent clamp is how the
+# total=0 / human=0 splits of COY-537 reached worklogs unnoticed.
+if [ "$human" -ne "$human_gap" ] || [ "$total" -lt 0 ] || [ "$human" -lt 0 ]; then
+  printf '[worklog-split] WARNING: INVARIANT violated — ai %d + human %d + away %d + auto_away %d != elapsed %d (human gap %d). This split is NOT trustworthy: use worklog-split-override and report it (COY-537).\n' \
+    "$ai" "$human" "$away" "$auto_away" "$((now - start))" "$human_gap" > "/dev/stderr"
+  [ "$total" -lt 0 ] && total=0
+  [ "$human" -lt 0 ] && human=0
+fi
 
 fmt() { printf '%02d:%02d:%02d' $(( $1 / 3600 )) $(( ($1 % 3600) / 60 )) $(( $1 % 60 )); }
 
