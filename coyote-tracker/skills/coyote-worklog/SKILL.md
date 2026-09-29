@@ -65,6 +65,12 @@ one the hook reports, or better, say nothing. They are **write-once** server-sid
 create means absent forever. They are provenance, not measurement, so leave them out of the
 figures you report to the user.
 
+**The same goes for `split_source` / `canonical_seconds` / `canonical_ai_seconds`** (0.13.0,
+COY-538). The hook records how the split was produced: `mechanical`, `stitched`, or — when it
+consumes a `worklog-split-override` — `override`, with the lane's measurement alongside. An
+override is therefore visible downstream as an override, and the measured figures are kept
+next to yours; still say in the description *why* you overrode.
+
 **If the split warns that a predecessor lane was stitched in**, the session id rotated mid-work
 (the CLI relaunched) and the figures now cover both lanes — say so when you report them, and
 give the earlier window start rather than this lane's. Nothing to do: the recovery is automatic
