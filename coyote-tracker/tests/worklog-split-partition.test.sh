@@ -106,15 +106,19 @@ AI_START $cur
 EOF
 run
 partition "unclosed turn + overnight + interrupted morning" "$S"
-# Exact figures: AI = the two closed turns + the open tail. Human gaps:
-# [S, t1] 60; [t1+540, m+1200] minus the cap (the stale turns are human-gap
-# time, as they were before); [m+1500, cur] capped.
-g2=$(( m + 1200 - (t1 + 540) )); g3=$(( cur - (m + 1500) ))
+# Exact figures: AI = the two closed turns + the open tail. Human gaps: every
+# prompt proves presence, so each interrupted AI_START closes the stretch before
+# it and the cap applies per stretch — [t1+540, t2] 100; [t2, m] the night,
+# capped; [m, m+600] and [m+600, m+1200] 600 each; [m+1500, cur] capped. 0.12.1
+# kept [t1+540, m+1200] as ONE stretch, so the morning's 1,200s of prompts (and
+# the 100s before the Esc) shared the night's single cap.
+cap_ex() { [ "$1" -gt "$CAP" ] && echo $(( $1 - CAP )) || echo 0; }
+g3=$(( cur - (m + 1500) ))
 exp_ai=$(( 540 + 300 + 60 ))
-exp_auto=$(( (g2 > CAP ? g2 - CAP : 0) + (g3 > CAP ? g3 - CAP : 0) ))
+exp_auto=$(( $(cap_ex $(( m - t2 ))) + $(cap_ex $g3) ))
 is "unclosed turn: ai" "$exp_ai" "$AI"
 is "unclosed turn: auto_away (night counted once)" "$exp_auto" "$AUTO"
-is "unclosed turn: human" "$(( 60 + (g2 < CAP ? g2 : CAP) + (g3 < CAP ? g3 : CAP) ))" "$HUMAN"
+is "unclosed turn: human" "$(( 60 + 100 + CAP + 600 + 600 + (g3 < CAP ? g3 : CAP) ))" "$HUMAN"
 case "$WARN" in *"no AI_END"*) ok "unclosed turn: warned about the stale turn" ;;
   *) bad "unclosed turn: warned about the stale turn" "*no AI_END*" "$WARN" ;; esac
 
@@ -163,6 +167,24 @@ EOF
 run
 partition "out-of-order turn-log" "$S"
 is "out-of-order: ai" "$(( 300 + 300 + 60 ))" "$AI"
+
+# 2b. The per-prompt bound on its own: a night, then an hour of prompts that were
+#     ALL interrupted (Esc every time). Each prompt proves presence, so the hour
+#     is Human; only the night is capped. 0.12.1 returned human = CAP here.
+lane "$S" <<EOF
+AI_START $(( S + 60 ))
+AI_END $(( S + 360 ))
+AI_START $(( S + 400 ))
+AI_START $(( S + 400 + 12 * 3600 ))
+AI_START $(( S + 400 + 12 * 3600 + 1200 ))
+AI_START $(( S + 400 + 12 * 3600 + 2400 ))
+AI_START $(( NOW - 30 ))
+EOF
+run
+partition "interrupted-only morning" "$S"
+g_last=$(( NOW - 30 - (S + 400 + 12 * 3600 + 2400) ))
+is "interrupted-only morning: human" "$(( 60 + 40 + CAP + 1200 + 1200 + (g_last < CAP ? g_last : CAP) ))" "$HUMAN"
+is "interrupted-only morning: ai" "$(( 300 + 30 ))" "$AI"
 
 echo "COY-537 — well-formed sessions are unchanged"
 

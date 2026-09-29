@@ -172,11 +172,16 @@ cap_sec=$(( idle_cap_min * 60 ))
 #
 #   - Stale turn: an AI_START with no AI_END before the next AI_START (the human
 #     pressed Esc — the Stop hook does not fire on an interrupt). How long the AI
-#     actually ran is unknowable, so the stale turn stays part of the surrounding
-#     human gap, which the idle cap then bounds. Up to 0.12.0 each such AI_START
-#     re-measured the gap from the same last-busy point, so an overnight break
-#     before a run of interrupted turns became auto-away once PER TURN — away
-#     exceeded the window and the split collapsed to total=0 / human=0.
+#     actually ran is unknowable, so the stale turn's span is counted as human
+#     gap. But both prompts — the interrupted one and the next — prove the human
+#     was present at that moment, so each one closes the idle stretch before it
+#     and the cap applies to each stretch on its own. Up to 0.12.0 each such
+#     AI_START re-measured the gap from the same last-busy point, so an overnight
+#     break before a run of interrupted turns became auto-away once PER TURN —
+#     away exceeded the window and the split collapsed to total=0 / human=0.
+#     0.12.1 fixed the double count but kept the whole run as ONE stretch, so a
+#     morning of interrupted turns after a night shared a single cap with the
+#     night itself (a real hour of prompts came out as 30m of Human).
 #   - AI_START while away is open (`aw`, then a plain prompt instead of `bk`):
 #     the prompt IS the return, so it closes the away implicitly. A later `bk`
 #     is then an orphan and falls under the COY-136 clamp below. Up to 0.12.0
@@ -210,10 +215,14 @@ $(sort -s -n -k2,2 "$log_file" | awk -v s="$start" -v n="$now" -v cap="$cap_sec"
       if (st == "human") {
         u = t; st = "ai"
       } else if (st == "ai") {
-        # Previous turn never closed; its span stays in the human gap from hs.
+        # Previous turn never closed. Its prompt at u and this prompt at t both
+        # prove presence, so [hs, u] and [u, t] are separate stretches, each
+        # capped on its own — an interrupted run must not share one cap with the
+        # night before it.
         stale_turn()
-        if (pend) { gap(hs, pend); away += t - pend; hs = t; pend = 0; implicit++ }
-        u = t
+        gap(hs, u)
+        if (pend) { gap(u, pend); away += t - pend; pend = 0; implicit++ } else gap(u, t)
+        hs = t; u = t
       } else {
         away += t - as; hs = t; u = t; st = "ai"; implicit++
       }
@@ -233,7 +242,7 @@ $(sort -s -n -k2,2 "$log_file" | awk -v s="$start" -v n="$now" -v cap="$cap_sec"
         away += t - as; hs = t; st = "human"
       } else if (st == "ai" && pend) {
         # aw/bk around a turn that never closed: the turn was stale.
-        stale_turn(); gap(hs, pend); away += t - pend; hs = t; pend = 0; st = "human"
+        stale_turn(); gap(hs, u); gap(u, pend); away += t - pend; hs = t; pend = 0; st = "human"
       } else if (last_ai_end > 0 && t > hs) {
         if (st == "ai") stale_turn()
         printf "[worklog-split] WARNING: unmatched AWAY_END at epoch %d — synthesized AWAY_START at preceding AI_END epoch %d (mid-turn aw injection, COY-136). Reconstructed %ds of away time.\n", t, hs, (t - hs) > "/dev/stderr"
@@ -254,7 +263,7 @@ $(sort -s -n -k2,2 "$log_file" | awk -v s="$start" -v n="$now" -v cap="$cap_sec"
       gap(hs, n)
     }
     if (stale > 0) {
-      printf "[worklog-split] WARNING: %d AI turn(s) had no AI_END (interrupted — the Stop hook does not fire on Esc), first at epoch %d. Their span was counted as human gap time, bounded by the idle cap (COY-537).\n", stale, stale_at > "/dev/stderr"
+      printf "[worklog-split] WARNING: %d AI turn(s) had no AI_END (interrupted — the Stop hook does not fire on Esc), first at epoch %d. Their span was counted as human gap time; each prompt bounds its own idle stretch under the cap (COY-537).\n", stale, stale_at > "/dev/stderr"
     }
     if (implicit > 0) {
       printf "[worklog-split] WARNING: %d away interval(s) were closed by the next prompt rather than `bk` — treated as an implicit return at that prompt (COY-537).\n", implicit > "/dev/stderr"
