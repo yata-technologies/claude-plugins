@@ -12,6 +12,19 @@
 #   AI_END          <epoch> <HH:MM:SS>   — Stop hook fired, AI finished the turn
 #   AWAY_START      <epoch> <HH:MM:SS>   — user typed exactly "aw" (break begins)
 #   AWAY_END        <epoch> <HH:MM:SS>   — user typed exactly "bk"  (break ends)
+#   AGENT_START     <epoch> <HH:MM:SS> <agent_id> — SubagentStart hook (COY-562)
+#   AGENT_END       <epoch> <HH:MM:SS> <agent_id> — SubagentStop hook  (COY-562)
+#
+# Subagent runs (COY-562): a background subagent keeps working after the main
+# turn's Stop hook has written AI_END, so without these markers its whole run
+# reads as a human gap — the more work is delegated, the lower the AI share.
+# Every second covered by at least one subagent run is AI, whatever bucket the
+# walk below would otherwise put it in (human gap, explicit away, auto-away).
+# Overlapping runs count once (union), and a run inside an AI turn adds
+# nothing. Runs are paired by agent id; a run whose AGENT_END never arrived is
+# closed at the next AI_START after it (the completion notification, or the
+# next prompt), else at now — so a lost stop event cannot bill hours to AI.
+# A turn-log without AGENT_* markers splits exactly as before.
 #
 # AI seconds    = Σ (AI_END.epoch − matched preceding AI_START.epoch)
 #                 + (now − last AI_START.epoch) if no matching AI_END exists
@@ -193,20 +206,91 @@ cap_sec=$(( idle_cap_min * 60 ))
 #   - Unmatched AWAY_END: the human gap since the last AI_END becomes away
 #     (COY-136 clamp to AI_END). With no AI_END to clamp to, nothing is counted.
 #
+#   - Subagent runs: never move a segment boundary. Each human-gap or away
+#     segment is closed exactly as above, and then the part of it covered by a
+#     subagent run is credited to AI instead (gap() / awayseg()). The idle cap
+#     applies to what is left of the gap, as one stretch — a subagent finishing
+#     proves nothing about the human being present.
+#
 # Lines are sorted by epoch first: a stitched predecessor log (COY-402) is
 # concatenated, not merged. Markers before `start` are ignored as before, and
 # markers after `now` (clock skew) are pulled back to `now`.
-read -r ai away auto_away human_gap <<EOF
-$(sort -s -n -k2,2 "$log_file" | awk -v s="$start" -v n="$now" -v cap="$cap_sec" '
-  # Close a human gap [gs, ge]: keep up to cap seconds as Human, reclassify
-  # the excess as auto-away.
-  function gap(gs, ge,   len) {
+sorted_log=$(sort -s -n -k2,2 "$log_file")
+
+# Pre-pass (COY-562): pair AGENT_START/AGENT_END by agent id, clip the runs to
+# [start, now] and merge overlaps. Prints "<runs> <unclosed>" then one line of
+# space-separated "a:b" intervals (possibly empty).
+agent_pass=$(printf '%s\n' "$sorted_log" | awk -v s="$start" -v n="$now" '
+  $2 !~ /^[0-9]+$/ { next }
+  {
+    t = ($2 > n) ? n : $2 + 0
+    id = ($4 != "") ? $4 : "-"
+    if ($1 == "AGENT_START") {
+      # A repeated start for a run already open keeps the first.
+      if (!(id in open)) { open[id] = t; runs++ }
+    } else if ($1 == "AGENT_END") {
+      if (id in open) { add(open[id], t); delete open[id]; delete bound[id] }
+    } else if ($1 == "AI_START") {
+      for (k in open) if (!(k in bound) && t > open[k]) bound[k] = t
+    }
+  }
+  function add(a, b) {
+    if (a < s) a = s
+    if (b > n) b = n
+    if (b > a) { m++; A[m] = a; B[m] = b }
+  }
+  END {
+    for (k in open) { unclosed++; add(open[k], (k in bound) ? bound[k] : n) }
+    # Insertion sort by start, then merge (a handful of runs per session).
+    for (i = 2; i <= m; i++) {
+      a = A[i]; b = B[i]
+      for (j = i - 1; j >= 1 && A[j] > a; j--) { A[j+1] = A[j]; B[j+1] = B[j] }
+      A[j+1] = a; B[j+1] = b
+    }
+    out = ""; ca = -1
+    for (i = 1; i <= m; i++) {
+      if (ca < 0) { ca = A[i]; cb = B[i] }
+      else if (A[i] <= cb) { if (B[i] > cb) cb = B[i] }
+      else { out = out " " ca ":" cb; ca = A[i]; cb = B[i] }
+    }
+    if (ca >= 0) out = out " " ca ":" cb
+    printf "%d %d\n%s\n", runs, unclosed, out
+  }
+')
+read -r agent_runs agent_unclosed <<<"$(printf '%s\n' "$agent_pass" | sed -n 1p)"
+agent_ivals=$(printf '%s\n' "$agent_pass" | sed -n 2p)
+
+read -r ai away auto_away human_gap agent_ai <<EOF
+$(printf '%s\n' "$sorted_log" | awk -v s="$start" -v n="$now" -v cap="$cap_sec" -v agents="$agent_ivals" '
+  # Seconds of [a, b] covered by a (merged) subagent run.
+  function cov(a, b,   i, x, y, c) {
+    c = 0
+    for (i = 1; i <= na; i++) {
+      x = (AS[i] > a) ? AS[i] : a; y = (AE[i] < b) ? AE[i] : b
+      if (y > x) c += y - x
+    }
+    return c
+  }
+  # Close a human gap [gs, ge]: the part a subagent was running is AI; of the
+  # rest, keep up to cap seconds as Human and reclassify the excess as auto-away.
+  function gap(gs, ge,   len, c) {
     if (ge <= gs) return
-    len = ge - gs
+    c = cov(gs, ge); ai += c; agent_ai += c
+    len = ge - gs - c
     if (cap > 0 && len > cap) { auto_away += len - cap; hgap += cap } else hgap += len
   }
+  # Close an explicit away segment [as0, ae]: same subagent carve-out.
+  function awayseg(as0, ae,   c) {
+    if (ae <= as0) return
+    c = cov(as0, ae); ai += c; agent_ai += c
+    away += ae - as0 - c
+  }
   function stale_turn() { stale++; if (!stale_at) stale_at = u }
-  BEGIN { st = "human"; hs = s; ai = 0; away = 0; auto_away = 0; hgap = 0 }
+  BEGIN {
+    st = "human"; hs = s; ai = 0; away = 0; auto_away = 0; hgap = 0; agent_ai = 0
+    na = split(agents, iv, " ")
+    for (i = 1; i <= na; i++) { split(iv[i], p, ":"); AS[i] = p[1] + 0; AE[i] = p[2] + 0 }
+  }
   $1 !~ /^(AI_START|AI_END|AWAY_START|AWAY_END)$/ || $2 !~ /^[0-9]+$/ { next }
   $2 < s { next }
   {
@@ -221,10 +305,10 @@ $(sort -s -n -k2,2 "$log_file" | awk -v s="$start" -v n="$now" -v cap="$cap_sec"
         # night before it.
         stale_turn()
         gap(hs, u)
-        if (pend) { gap(u, pend); away += t - pend; pend = 0; implicit++ } else gap(u, t)
+        if (pend) { gap(u, pend); awayseg(pend, t); pend = 0; implicit++ } else gap(u, t)
         hs = t; u = t
       } else {
-        away += t - as; hs = t; u = t; st = "ai"; implicit++
+        awayseg(as, t); hs = t; u = t; st = "ai"; implicit++
       }
     } else if ($1 == "AI_END") {
       if (st == "ai") {
@@ -239,14 +323,14 @@ $(sort -s -n -k2,2 "$log_file" | awk -v s="$start" -v n="$now" -v cap="$cap_sec"
       # AWAY_START while already away: keep the first.
     } else if ($1 == "AWAY_END") {
       if (st == "away") {
-        away += t - as; hs = t; st = "human"
+        awayseg(as, t); hs = t; st = "human"
       } else if (st == "ai" && pend) {
         # aw/bk around a turn that never closed: the turn was stale.
-        stale_turn(); gap(hs, u); gap(u, pend); away += t - pend; hs = t; pend = 0; st = "human"
+        stale_turn(); gap(hs, u); gap(u, pend); awayseg(pend, t); hs = t; pend = 0; st = "human"
       } else if (last_ai_end > 0 && t > hs) {
         if (st == "ai") stale_turn()
         printf "[worklog-split] WARNING: unmatched AWAY_END at epoch %d — synthesized AWAY_START at preceding AI_END epoch %d (mid-turn aw injection, COY-136). Reconstructed %ds of away time.\n", t, hs, (t - hs) > "/dev/stderr"
-        away += t - hs; hs = t; st = "human"
+        awayseg(hs, t); hs = t; st = "human"
       } else {
         printf "[worklog-split] WARNING: unmatched AWAY_END at epoch %d with no preceding AI_END to clamp to — away time not counted (COY-136). If a real away interval was missed, manually adjust via worklog-split-override.\n", t > "/dev/stderr"
       }
@@ -271,10 +355,21 @@ $(sort -s -n -k2,2 "$log_file" | awk -v s="$start" -v n="$now" -v cap="$cap_sec"
     if (auto_away > 0) {
       printf "[worklog-split] WARNING: %ds of idle time across long gaps reclassified as away (idle cap %ds, COY). The timer was preserved — no /clear needed. If this was real Human work, adjust via worklog-split-override.\n", auto_away, cap > "/dev/stderr"
     }
-    printf "%d %d %d %d\n", ai, away, auto_away, hgap
+    printf "%d %d %d %d %d\n", ai, away, auto_away, hgap, agent_ai
   }
 ')
 EOF
+
+# Leave a trace when subagent time moved into AI — the report behind COY-562
+# was invisible in the output, so nobody could tell the split had been skewed.
+if [ "${agent_ai:-0}" -gt 0 ] || [ "${agent_unclosed:-0}" -gt 0 ]; then
+  printf '[worklog-split] NOTE: %d subagent run(s) seen; %ds of their time outside main turns was counted as AI (COY-562).\n' \
+    "$agent_runs" "$agent_ai" >&2
+  if [ "${agent_unclosed:-0}" -gt 0 ]; then
+    printf '[worklog-split] WARNING: %d subagent run(s) had no AGENT_END — each was closed at the next prompt after it, or at now (COY-562).\n' \
+      "$agent_unclosed" >&2
+  fi
+fi
 
 away_total=$(( away + auto_away ))
 total=$((now - start - away_total))
