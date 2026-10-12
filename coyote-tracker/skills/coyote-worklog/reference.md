@@ -202,6 +202,7 @@ Split Human/AI time automatically at conversation turn boundaries. Each turn's b
 **Capture mechanism (hook-driven):**
 - `UserPromptSubmit` hook appends `AI_START <epoch> <HH:MM:SS>` to `${CLAUDE_PROJECT_DIR}/.claude/sessions/<session_id>/turn-log` (= user submitted a prompt, AI begins). When the prompt is exactly `aw` or `bk`, the hook appends `AWAY_START` / `AWAY_END` instead.
 - `Stop` hook appends `AI_END <epoch> <HH:MM:SS>` to the same lane's `turn-log` (= AI finished the turn).
+- `SubagentStart` / `SubagentStop` hooks append `AGENT_START` / `AGENT_END <epoch> <HH:MM:SS> <agent_id>` (COY-562). A background subagent keeps working after the main turn's `AI_END`; these markers keep its run out of the Human bucket.
 - `SessionStart startup|clear` unconditionally resets `<lane>/timer-start` and truncates `<lane>/turn-log`, starting a clean window for the new session.
 
 **Compute at worklog time:**
@@ -212,7 +213,7 @@ Run `.claude/bin/worklog-split.sh <sid_8>` — where `<sid_8>` is the 8-char ses
 **No lane → the call is denied, not waved through (COY-402).** When the calling lane has no `timer-start`/`turn-log` there is nothing canonical to inject, and the hook used to pass the call straight to the API with whatever numbers you supplied. It now denies and tells you to surface the situation to the human first. The escape hatch is the same `worklog-split-override` marker, so nothing is forbidden — it is only made deliberate. The reason this matters: a self-reported split is *cheaper* than an investigation and looks identical downstream, so left ungated it becomes the silent default.
 
 Formally:
-- **AI time**    = Σ (`AI_END` epoch − matched preceding `AI_START` epoch), over entries within the current timer window
+- **AI time**    = Σ (`AI_END` epoch − matched preceding `AI_START` epoch), over entries within the current timer window, **plus** every second outside those turns covered by a subagent run (`AGENT_START`→`AGENT_END`, overlapping runs counted once — COY-562). Subagent time counts as AI even inside an away interval. A run with no `AGENT_END` is closed at the next `AI_START` after it (or at now). The split prints a `NOTE: … subagent run(s) …` line on stderr whenever this moved time into AI.
 - **Away time**  = Σ (`AWAY_END` epoch − matched preceding `AWAY_START` epoch)
 - **Total time** = `(now − timer-start) − Away`
 - **Human time** = Total − AI

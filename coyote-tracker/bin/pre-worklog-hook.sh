@@ -175,8 +175,9 @@ split_out=$("$BIN_DIR/worklog-split.sh" "$sid" 2>"$split_err") || { rm -f "$spli
 # Surface how the engine resolved an irregular turn-log (turns with no AI_END,
 # an away closed by a prompt instead of `bk`, or a broken invariant) rather
 # than discarding it: these are exactly the sessions whose split an author
-# would otherwise second-guess and override by hand (COY-537).
-engine_note=$(grep -E 'INVARIANT|COY-537' "$split_err" | sed 's/^\[worklog-split\] WARNING: //' | tr '\n' ' ' || true)
+# would otherwise second-guess and override by hand (COY-537), and subagent
+# time credited to AI so the figures can be explained (COY-562).
+engine_note=$(grep -E 'INVARIANT|COY-537|COY-562' "$split_err" | sed -E 's/^\[worklog-split\] (WARNING|NOTE): //' | tr '\n' ' ' || true)
 rm -f "$split_err"
 IFS=$'\t' read -r exp_total exp_ai exp_human _ai_fmt _human_fmt exp_auto exp_start <<< "$split_out"
 [ -n "${exp_ai:-}" ] && [ -n "${exp_human:-}" ] || exit 0
