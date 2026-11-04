@@ -123,6 +123,48 @@ esac
 teardown
 
 echo
+echo "COY-593 — split_source says the injected split is a measurement"
+# Up to 0.13.0 the hook sent agent_source but never split_source, so the Worker
+# stored NULL ("a Tracker that predates the field") on every measured row and
+# the Insights "Measured" share was 0% by construction.
+setup; seed_lane
+out=$(run_pre)
+is "an own-lane window is mechanical" "mechanical" "$(field "$out" split_source)"
+case "$(printf '%s' "$out" | jq -r '.hookSpecificOutput.additionalContext // ""')" in
+  *split_source=mechanical*) ok  "the agent is told split_source was injected" ;;
+  *)                         bad "the agent is told split_source was injected" "mentions split_source=mechanical" "(absent)" ;;
+esac
+teardown
+
+# A rotated session id whose predecessor lane worklog-split.sh adopts: the
+# effective window opens at the PREDECESSOR's timer-start (COY-402).
+setup; seed_lane
+PEER=11111111-2222-4333-8444-555555555555
+PEER_LANE="$REPO/.claude/sessions/$PEER"
+mkdir -p "$PEER_LANE"
+printf '%s\n' "$((START - 600))" > "$PEER_LANE/timer-start"
+printf 'AI_START %s 00:00:00\nAI_END %s 00:00:00\n' "$((START - 600))" "$((START - 300))" > "$PEER_LANE/turn-log"
+touch "$PEER_LANE/last-active"
+peer_mtime=$(stat -c %Y "$PEER_LANE/last-active" 2>/dev/null || stat -f %m "$PEER_LANE/last-active")
+printf '%s %s\n' "$PEER" "$peer_mtime" > "$LANE/chain-predecessor"
+out=$(run_pre)
+is "a stitched predecessor window is stitched" "stitched" "$(field "$out" split_source)"
+is "the stitched start is the predecessor's" "$(date -d "@$((START - 600))" +%H:%M:%S)" "$(field "$out" start_time)"
+teardown
+
+# A candidate that turned out to be a concurrent session is NOT adopted, so the
+# split is this lane's own measurement and must not be labelled stitched.
+setup; seed_lane
+mkdir -p "$PEER_LANE"
+printf '%s\n' "$((START - 600))" > "$PEER_LANE/timer-start"
+printf 'AI_START %s 00:00:00\n' "$((START - 600))" > "$PEER_LANE/turn-log"
+touch "$PEER_LANE/last-active"
+printf '%s %s\n' "$PEER" "1" > "$LANE/chain-predecessor"
+out=$(run_pre)
+is "a rejected chain candidate stays mechanical" "mechanical" "$(field "$out" split_source)"
+teardown
+
+echo
 echo "COY-522 — agent_source is overridable for a re-branded fork"
 setup; seed_lane
 printf 'agent_source=my-tracker\n' > "$REPO/.claude/coyote-tracker.config"
