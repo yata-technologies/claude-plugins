@@ -51,6 +51,49 @@ else
   }
 fi
 
+# tracker_install_state <path>... — is coyote-tracker installed for any of <path>?
+# Echoes `installed`, `missing`, or nothing (could not tell).
+#
+# Why this exists (COY-593 CM-4, postmortem §9): committing `enabledPlugins` is not
+# installing the plugin (COY-513). With no `installed_plugins.json` entry for the
+# project no hook is registered, so the jq preflight (COY-402) never fires and no
+# lane is ever created. The statusline still runs, because it is started from
+# `settings.local.json` through the consumer wrapper, and the wrapper resolves this
+# script from any cached copy, including one installed for a different project.
+# That makes this the only place left to say what is actually wrong, and the
+# generic `TRACKER OFF (no lane …)` points the reader at lanes instead.
+#
+# Only an explicit `missing` changes the message. If the registry is unreadable,
+# has an unexpected shape, or jq fails, the result is "could not tell" and the
+# generic warning stays. A false `NOT INSTALLED` would tell someone with a
+# working install to reinstall it.
+#
+# Paths are matched as the project itself or a directory under it, so a session in
+# a subdirectory still matches. The caller passes the hint, the lane root, and the
+# main checkout, so a session in a `git worktree` still matches an install
+# recorded against the main checkout. A `user`-scope install matches everywhere.
+tracker_install_state() {
+  local reg out
+  # Same resolution as the consumer wrapper. When CLAUDE_CONFIG_DIR is set,
+  # Claude Code reads ONLY that directory, so a registry under ~/.claude belongs
+  # to a different Claude config and must not be consulted.
+  reg="${CLAUDE_CONFIG_DIR:-${HOME:-}/.claude}/plugins/installed_plugins.json"
+  if [ ! -r "$reg" ]; then return 0; fi
+  out=$(jq -r --args '
+    $ARGS.positional as $paths
+    | [ (.plugins // {}) | to_entries[]
+        | select(.key | startswith("coyote-tracker@"))
+        | .value | (if type == "array" then .[] else . end) ]
+    | map(select(
+        .scope == "user"
+        or ((.projectPath // "") as $p
+            | $p != "" and ($paths | any(. != "" and (. == $p or startswith($p + "/")))))
+      ))
+    | if length > 0 then "installed" else "missing" end
+  ' "$@" < "$reg" 2>/dev/null) || return 0   # stdin: after --args every arg is positional
+  case "$out" in installed|missing) printf '%s' "$out" ;; esac
+}
+
 timer=""
 sid=$(echo "$input" | jq -r '.session_id // ""')
 if [ -z "$sid" ]; then
@@ -84,6 +127,18 @@ elif [ -n "$project_dir" ]; then
       fi
     fi
   fi
+  # Only on the no-timer path, so a healthy session never pays for the jq read.
+  # A plugin that is not installed never creates a lane, so it always ends up
+  # here.
+  case "$timer" in
+    " | ⚠ TRACKER OFF"*)
+      if [ "$(tracker_install_state "$project_dir" "$state_root" \
+              "$(tracker_main_checkout "$project_dir" 2>/dev/null)" \
+              "${CLAUDE_PROJECT_DIR:-}")" = missing ]; then
+        timer=" | ⚠ TRACKER NOT INSTALLED — claude plugin install coyote-tracker@yatatechnologies --scope project"
+      fi
+      ;;
+  esac
 else
   # No project dir resolved — there is nowhere for a lane to live either.
   timer=" | ⚠ TRACKER OFF (no project dir)"

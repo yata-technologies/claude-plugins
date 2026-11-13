@@ -58,9 +58,10 @@ verbatim. The PreToolUse hook rejects a `coyote_create_worklog` whose split devi
 or off from the lane's `timer-start`. To override (backfill/sub-window), confirm with the
 user, then `touch .claude/sessions/<sid>/worklog-split-override` (one-shot) and retry.
 
-**Never pass `agent_session_id` or `agent_source` yourself.** Since 0.12.0 the same
-PreToolUse hook stamps both (COY-522), so the worklog records which agent session produced
-it. Anything you pass is overwritten, and a hand-written session id would be wrong — use the
+**Never pass `agent_session_id`, `agent_source` or `split_source` yourself.** Since 0.12.0 the
+same PreToolUse hook stamps the first two (COY-522), and since 0.13.3 `split_source`
+(`mechanical`, or `stitched` for a stitched predecessor lane — COY-538 / COY-593), so the
+worklog records which agent session produced it and that its split is a measurement. Anything you pass is overwritten, and a hand-written session id would be wrong — use the
 one the hook reports, or better, say nothing. They are **write-once** server-side: absent on
 create means absent forever. They are provenance, not measurement, so leave them out of the
 figures you report to the user.
