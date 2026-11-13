@@ -81,7 +81,7 @@ it moved a whole project's AI-share figures (COY-402). If the user chooses to fi
 take the override and write "split is self-reported" into the description.
 
 **If the hook says `split NOT injected`, the worklog went out with your numbers.** Since
-0.13.3 the hook still fails open when it cannot build the split (the split script failed,
+0.13.5 the hook still fails open when it cannot build the split (the split script failed,
 start_time could not be formatted, jq failed…), but it says so instead of exiting silently
 (COY-593 CM-3). The create has already gone ahead with the values you passed and no
 provenance. Tell the user in that same response and name the reason the notice gives. Then

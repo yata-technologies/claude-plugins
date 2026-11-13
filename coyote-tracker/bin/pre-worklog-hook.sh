@@ -149,7 +149,7 @@ bail() {
   local reason="$1" sid8="${sid:0:8}"
   sid8="${sid8//[!A-Za-z0-9-]/}"
   printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"%s"}}' \
-    "⚠️ Coyote Tracker (${sid8}): split NOT injected — ${reason}. This worklog is being filed with the seconds / time_ai_seconds / time_human_seconds / start_time YOU passed, not a measured split, and without agent_session_id / agent_source provenance. Do this: (1) tell the user plainly that the Tracker did not inject the split for this worklog, and name the reason above; (2) once the create returns, update that worklog's description to say the split is self-reported (cause: ${reason}). Do not invent a round ratio (50/50) to fill the gap."
+    "⚠️ Coyote Tracker (${sid8}): split NOT injected — ${reason}. This worklog is being filed with the seconds / time_ai_seconds / time_human_seconds / start_time YOU passed, not a measured split, and without provenance (no agent_session_id / agent_source / split_source, so the server records it as split_source=manual). Do this: (1) tell the user plainly that the Tracker did not inject the split for this worklog, and name the reason above; (2) once the create returns, update that worklog's description to say the split is self-reported (cause: ${reason}). Do not invent a round ratio (50/50) to fill the gap."
   exit 0
 }
 
