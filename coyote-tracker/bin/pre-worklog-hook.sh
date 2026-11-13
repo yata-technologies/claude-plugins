@@ -40,13 +40,24 @@
 # So: if you add a field here, check the MCP accepts it in a version the fleet
 # already has. Do not assume unknown fields are ignored anywhere in this chain.
 #
+# Split provenance (COY-538 / COY-593). The rewrite also stamps split_source —
+# `mechanical` for this lane's own window, `stitched` when worklog-split.sh
+# adopted a predecessor lane after a session-id rotation (COY-402). Without it
+# the Worker stores NULL for every Tracker-measured row (agent_source present,
+# split_source absent reads as "a Tracker that predates the field"), so the
+# Insights "Measured" share was structurally 0% from COY-538 until 0.13.3.
+# split_source requires Coyote MCP >= 1.33.0; the same update-ordering argument
+# as above applies (1.33.0 published 2026-09, well before this shipped).
+#
 # Passthrough (agent's own values honored, no injection):
 #   - override marker present ($LANE/worklog-split-override) — explicit human
 #     override for a backfill / sub-window record. One-shot: deleted on
 #     consumption so the next call re-engages injection.
 #   - worklog-split.sh fails for any reason — fail open, never block a log.
 #
-#   Neither passthrough path stamps provenance, deliberately. Emitting an
+#   Neither passthrough path stamps provenance (agent_* or split_source),
+#   deliberately — so an override row lands as split_source=manual, not
+#   `override` (COY-T869 tracks revisiting this). Emitting an
 #   updatedInput there would mean also emitting permissionDecision "allow",
 #   which would newly auto-approve calls those paths currently leave to the
 #   normal permission flow — a bigger behavioural change than the provenance is
@@ -201,7 +212,14 @@ canon_start=$(date -d "@$timer_epoch" +%H:%M:%S 2>/dev/null || true)
 
 sid_short="${sid:0:8}"
 
-# Rewrite tool_input: merge the four canonical fields over the agent-supplied
+# Split provenance (COY-538). The split's effective start differs from this
+# lane's own timer-start only when a predecessor lane was stitched in (COY-402),
+# so the comparison is the stitch signal — no need to parse the stderr warning.
+lane_start=$(cat "$LANE/timer-start" 2>/dev/null || true)
+split_source=mechanical
+[ -n "${exp_start:-}" ] && [ -n "$lane_start" ] && [ "$exp_start" != "$lane_start" ] && split_source=stitched
+
+# Rewrite tool_input: merge the four canonical fields (plus provenance) over the agent-supplied
 # input. Building updatedInput from the FULL original tool_input (rather than
 # only the overwritten keys) is safe under both merge and replace semantics —
 # task_slug / description / activity_id / date etc. are preserved verbatim.
@@ -215,6 +233,7 @@ out=$(printf '%s' "$input" | jq -c \
   --arg sidshort "$sid_short" \
   --arg agentsid "$sid" \
   --arg agentsrc "$agent_source" \
+  --arg splitsrc "$split_source" \
   --arg engnote "$engine_note" \
   '.tool_input as $ti |
    (if $auto > 0 then " ⚠️ Auto-away: \($auto)s of idle time was reclassified out of Human by the idle cap — the timer was preserved (no /clear, and no /bk since no /aw was ever opened). Tell the human plainly that this idle stretch was excluded from Human time; if it was actually working time, they can re-log with an explicit worklog-split-override." else "" end) as $autonote |
@@ -228,9 +247,10 @@ out=$(printf '%s' "$input" | jq -c \
          time_human_seconds: $hu,
          start_time: $st,
          agent_session_id: $agentsid,
-         agent_source: $agentsrc
+         agent_source: $agentsrc,
+         split_source: $splitsrc
        }),
-       additionalContext: ("Coyote Tracker (\($sidshort)): canonical split injected by pre-worklog-hook — seconds=\($sec), time_ai_seconds=\($ai), time_human_seconds=\($hu), start_time=\($st) (raw window total=\($total)s). Report THESE figures to the human in your closing message. Do NOT run worklog-split.sh — the hook is the source of truth for this session'"'"'s lane. Provenance was injected too (agent_source=\($agentsrc), agent_session_id=\($agentsid)) — do not pass either yourself, and do not report them as part of the split.\($autonote)\($engnote)")
+       additionalContext: ("Coyote Tracker (\($sidshort)): canonical split injected by pre-worklog-hook — seconds=\($sec), time_ai_seconds=\($ai), time_human_seconds=\($hu), start_time=\($st) (raw window total=\($total)s). Report THESE figures to the human in your closing message. Do NOT run worklog-split.sh — the hook is the source of truth for this session'"'"'s lane. Provenance was injected too (agent_source=\($agentsrc), agent_session_id=\($agentsid), split_source=\($splitsrc)) — do not pass any of them yourself, and do not report them as part of the split.\($autonote)\($engnote)")
      }
    }' 2>/dev/null) || exit 0
 
