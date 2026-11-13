@@ -49,12 +49,15 @@ export TRACKER_SPLIT_NOW="$NOW"
 S=$(( NOW - 30 * 3600 ))   # a session that started the previous day
 
 # lane <start> then marker lines on stdin as "<KIND> <epoch>"
+# The 3rd turn-log field (HH:MM:SS) is for humans; the engine reads only the
+# epoch, so a fixed placeholder is enough. Rendering it per line used GNU-only
+# `date -d`, and the portable jq form costs a process per line (~6x slower).
 lane() {
   rm -rf "$LANE"; mkdir -p "$LANE"
   printf '%s\n' "$1" > "$LANE/timer-start"
   local kind ep
   while read -r kind ep; do
-    [ -n "$kind" ] && printf '%s %s %s\n' "$kind" "$ep" "$(date -d "@$ep" +%H:%M:%S 2>/dev/null || echo 00:00:00)"
+    [ -n "$kind" ] && printf '%s %s %s\n' "$kind" "$ep" 00:00:00
   done > "$LANE/turn-log"
 }
 

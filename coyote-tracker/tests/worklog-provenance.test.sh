@@ -99,7 +99,7 @@ is "the decision is still allow" \
 # Derived, not hardcoded: the canonical start is the window start rendered in
 # the RECORDER'S LOCAL time (COY-206), so a literal here would only pass in one
 # timezone.
-is "start_time is still injected" "$(date -d "@$START" +%H:%M:%S)" "$(field "$out" start_time)"
+is "start_time is still injected" "$(jq -rn --argjson e "$START" '$e | strflocaltime("%H:%M:%S")')" "$(field "$out" start_time)"
 for f in seconds time_ai_seconds time_human_seconds; do
   v=$(field "$out" "$f")
   case "$v" in

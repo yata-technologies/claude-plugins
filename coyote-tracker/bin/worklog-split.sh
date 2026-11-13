@@ -168,7 +168,7 @@ if [ -f "$CHAIN" ]; then
     # Mark the peer so a third session cannot adopt the same turn-log again.
     : > "$peer_lane/chain-consumed"
     printf '[worklog-split] WARNING: session id rotated — stitched in predecessor lane %s (window opened %s). This split covers BOTH lanes; the gap between them is treated as a human gap and capped by the idle cap. Say so when reporting the figures (COY-402).\n' \
-      "${peer_sid:0:8}" "$(date -d "@$peer_start" +%H:%M:%S 2>/dev/null || echo "$peer_start")" > "/dev/stderr"
+      "${peer_sid:0:8}" "$(jq -rn --argjson e "$peer_start" '$e | strflocaltime("%H:%M:%S")' 2>/dev/null || echo "$peer_start")" > "/dev/stderr"
   fi
 fi
 
