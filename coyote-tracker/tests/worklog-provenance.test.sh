@@ -99,7 +99,7 @@ is "the decision is still allow" \
 # Derived, not hardcoded: the canonical start is the window start rendered in
 # the RECORDER'S LOCAL time (COY-206), so a literal here would only pass in one
 # timezone.
-is "start_time is still injected" "$(date -d "@$START" +%H:%M:%S)" "$(field "$out" start_time)"
+is "start_time is still injected" "$(jq -rn --argjson e "$START" '$e | strflocaltime("%H:%M:%S")')" "$(field "$out" start_time)"
 for f in seconds time_ai_seconds time_human_seconds; do
   v=$(field "$out" "$f")
   case "$v" in
@@ -149,7 +149,7 @@ peer_mtime=$(stat -c %Y "$PEER_LANE/last-active" 2>/dev/null || stat -f %m "$PEE
 printf '%s %s\n' "$PEER" "$peer_mtime" > "$LANE/chain-predecessor"
 out=$(run_pre)
 is "a stitched predecessor window is stitched" "stitched" "$(field "$out" split_source)"
-is "the stitched start is the predecessor's" "$(date -d "@$((START - 600))" +%H:%M:%S)" "$(field "$out" start_time)"
+is "the stitched start is the predecessor's" "$(jq -rn --argjson e "$((START - 600))" '$e | strflocaltime("%H:%M:%S")')" "$(field "$out" start_time)"
 teardown
 
 # A candidate that turned out to be a concurrent session is NOT adopted, so the

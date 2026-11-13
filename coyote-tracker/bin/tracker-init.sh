@@ -60,7 +60,9 @@ if [ ! -f "$cfg" ]; then
   mkdir -p "$PROJECT_DIR/.claude"
   cp "$TEMPLATES/coyote-tracker.config.example" "$cfg"
   # Point worklog_config_doc at the actual doc rather than the template placeholder.
-  sed -i "s|^worklog_config_doc=.*|worklog_config_doc=${doc_rel}|" "$cfg"
+  # No `sed -i`: GNU takes it bare, BSD/macOS requires a suffix argument, and no
+  # single spelling works on both. Write to a temp file and move it into place.
+  sed "s|^worklog_config_doc=.*|worklog_config_doc=${doc_rel}|" "$cfg" > "$cfg.tmp" && mv "$cfg.tmp" "$cfg"
   created+=("$cfg")
 fi
 
