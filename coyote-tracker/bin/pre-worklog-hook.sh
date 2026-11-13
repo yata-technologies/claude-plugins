@@ -44,7 +44,14 @@
 #   - override marker present ($LANE/worklog-split-override) — explicit human
 #     override for a backfill / sub-window record. One-shot: deleted on
 #     consumption so the next call re-engages injection.
-#   - worklog-split.sh fails for any reason — fail open, never block a log.
+#   - the injection cannot be built for any reason (worklog-split.sh fails or
+#     returns nothing usable, start_time cannot be formatted, jq fails) — fail
+#     open, never block a log. But NOT silently (COY-593 CM-3): every such
+#     bailout goes through `bail`, which emits additionalContext naming the
+#     reason, so Claude tells the user and marks the split as self-reported.
+#     Before CM-3 these were bare `|| exit 0`s, and on macOS one of them (the
+#     GNU-only `date -d`) skipped injection on every worklog for four months
+#     without anyone seeing it.
 #
 #   Neither passthrough path stamps provenance, deliberately. Emitting an
 #   updatedInput there would mean also emitting permissionDecision "allow",
@@ -110,6 +117,31 @@ EOF
   exit 2
 fi
 
+# bail <reason> — fail open, but out loud (COY-593 CM-3).
+#
+# Used for every bailout taken AFTER the call is known to be a worklog create.
+# The worklog still goes ahead with the agent's own values; what changes is
+# that Claude is told so, in the same register as tracker_preflight_block: name
+# the cause, state the consequence, give the action.
+#
+# The output carries additionalContext ONLY — no permissionDecision and no
+# updatedInput — so the call keeps going through the normal permission flow,
+# exactly as the old silent `exit 0` did. Emitting "allow" here would newly
+# auto-approve calls on a path that is, by definition, already off the rails.
+#
+# Deliberately jq-free: one of the bailouts IS a jq failure, and a notice that
+# needs jq to say "jq failed" says nothing. That is why <reason> must be a
+# static string from this file with no double quotes or backslashes — it is
+# spliced into the JSON as-is. The session-id prefix is filtered to
+# [A-Za-z0-9-] for the same reason.
+bail() {
+  local reason="$1" sid8="${sid:0:8}"
+  sid8="${sid8//[!A-Za-z0-9-]/}"
+  printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"%s"}}' \
+    "⚠️ Coyote Tracker (${sid8}): split NOT injected — ${reason}. This worklog is being filed with the seconds / time_ai_seconds / time_human_seconds / start_time YOU passed, not a measured split, and without agent_session_id / agent_source provenance. Do this: (1) tell the user plainly that the Tracker did not inject the split for this worklog, and name the reason above; (2) once the create returns, update that worklog's description to say the split is self-reported (cause: ${reason}). Do not invent a round ratio (50/50) to fill the gap."
+  exit 0
+}
+
 
 # Lane state is per-REPO, not per-worktree: `sessions/` is gitignored, so a
 # worktree created mid-session holds no copy, and anchoring on this checkout's
@@ -162,8 +194,8 @@ if [ ! -f "$LANE/timer-start" ] || [ ! -f "$LANE/turn-log" ]; then
          + "   then retry this call — and say in the worklog description that the split is self-reported.\n"
          + "The marker is one-shot: it is consumed by the retry, so the next worklog is gated again."
        )
-     }}' 2>/dev/null) || exit 0
-  [ -n "$deny" ] || exit 0
+     }}' 2>/dev/null) || bail "no tracking window for this lane (no timer-start / turn-log), and the deny that should have stopped this call could not be rendered (jq failed)"
+  [ -n "$deny" ] || bail "no tracking window for this lane (no timer-start / turn-log), and the deny that should have stopped this call came out empty"
   printf '%s' "$deny"
   exit 0
 fi
@@ -171,7 +203,7 @@ fi
 # Canonical split at call time. Fail open — never block a worklog if the split
 # script hiccups.
 split_err=$(mktemp "${TMPDIR:-/tmp}/coyote-split-err-XXXXXX")
-split_out=$("$BIN_DIR/worklog-split.sh" "$sid" 2>"$split_err") || { rm -f "$split_err"; exit 0; }
+split_out=$("$BIN_DIR/worklog-split.sh" "$sid" 2>"$split_err") || { rm -f "$split_err"; bail "worklog-split.sh exited non-zero"; }
 # Surface how the engine resolved an irregular turn-log (turns with no AI_END,
 # an away closed by a prompt instead of `bk`, or a broken invariant) rather
 # than discarding it: these are exactly the sessions whose split an author
@@ -180,8 +212,14 @@ split_out=$("$BIN_DIR/worklog-split.sh" "$sid" 2>"$split_err") || { rm -f "$spli
 engine_note=$(grep -E 'INVARIANT|COY-537|COY-562' "$split_err" | sed -E 's/^\[worklog-split\] (WARNING|NOTE): //' | tr '\n' ' ' || true)
 rm -f "$split_err"
 IFS=$'\t' read -r exp_total exp_ai exp_human _ai_fmt _human_fmt exp_auto exp_start <<< "$split_out"
-[ -n "${exp_ai:-}" ] && [ -n "${exp_human:-}" ] || exit 0
+[ -n "${exp_ai:-}" ] && [ -n "${exp_human:-}" ] || bail "worklog-split.sh returned no AI / Human figures"
 exp_auto="${exp_auto:-0}"
+# Every figure below goes through $(( )) and --argjson. A non-integer would
+# either trip `set -u` in the arithmetic (exit 1, no notice) or fail jq, so
+# check once, here, and say which.
+for _n in "$exp_ai" "$exp_human" "$exp_auto"; do
+  case "$_n" in ''|*[!0-9]*) bail "worklog-split.sh returned a non-integer figure" ;; esac
+done
 
 # seconds is set to the split's own sum so the injected triple is always
 # internally consistent (ai + human == seconds), regardless of the rare
@@ -195,9 +233,9 @@ inj_seconds=$(( exp_ai + exp_human ))
 # — taking it from the file would pair a two-lane duration with a one-lane start.
 timer_epoch="${exp_start:-}"
 [ -n "$timer_epoch" ] || timer_epoch=$(cat "$LANE/timer-start" 2>/dev/null || true)
-[ -n "$timer_epoch" ] || exit 0
+[ -n "$timer_epoch" ] || bail "no window start (the split gave none and the lane timer-start is empty)"
 canon_start=$(date -d "@$timer_epoch" +%H:%M:%S 2>/dev/null || true)
-[ -n "$canon_start" ] || exit 0
+[ -n "$canon_start" ] || bail "could not format start_time from the window start epoch"
 
 sid_short="${sid:0:8}"
 
@@ -232,9 +270,10 @@ out=$(printf '%s' "$input" | jq -c \
        }),
        additionalContext: ("Coyote Tracker (\($sidshort)): canonical split injected by pre-worklog-hook — seconds=\($sec), time_ai_seconds=\($ai), time_human_seconds=\($hu), start_time=\($st) (raw window total=\($total)s). Report THESE figures to the human in your closing message. Do NOT run worklog-split.sh — the hook is the source of truth for this session'"'"'s lane. Provenance was injected too (agent_source=\($agentsrc), agent_session_id=\($agentsid)) — do not pass either yourself, and do not report them as part of the split.\($autonote)\($engnote)")
      }
-   }' 2>/dev/null) || exit 0
+   }' 2>/dev/null) || bail "the rewritten tool input could not be built (jq failed)"
 
-# Emit the rewrite (stdout JSON + exit 0). If jq produced nothing, fail open.
-[ -n "$out" ] || exit 0
+# Emit the rewrite (stdout JSON + exit 0). If jq produced nothing, fail open,
+# out loud.
+[ -n "$out" ] || bail "the rewritten tool input came out empty"
 printf '%s' "$out"
 exit 0
