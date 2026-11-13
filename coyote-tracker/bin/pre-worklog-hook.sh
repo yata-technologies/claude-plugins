@@ -245,7 +245,11 @@ inj_seconds=$(( exp_ai + exp_human ))
 timer_epoch="${exp_start:-}"
 [ -n "$timer_epoch" ] || timer_epoch=$(cat "$LANE/timer-start" 2>/dev/null || true)
 [ -n "$timer_epoch" ] || bail "no window start (the split gave none and the lane timer-start is empty)"
-canon_start=$(date -d "@$timer_epoch" +%H:%M:%S 2>/dev/null || true)
+# Formatted with jq, NOT `date -d @<epoch>`: -d is GNU-only, BSD date on macOS
+# rejects it, and the bare `|| exit 0` that used to follow then silently skipped
+# the whole injection — no split, no provenance — on every Mac (COY-593 CM-1).
+# strflocaltime honours TZ exactly as date does, and jq is already required.
+canon_start=$(jq -rn --argjson e "$timer_epoch" '$e | strflocaltime("%H:%M:%S")' 2>/dev/null || true)
 [ -n "$canon_start" ] || bail "could not format start_time from the window start epoch"
 
 sid_short="${sid:0:8}"

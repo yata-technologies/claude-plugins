@@ -41,13 +41,16 @@ NOW=$(date +%s)
 export TRACKER_SPLIT_NOW="$NOW"
 
 # lane <start> then marker lines on stdin as "<KIND> <epoch> [agent_id]"
+# The 3rd turn-log field (HH:MM:SS) is for humans; the engine reads only the
+# epoch (and agent_id as field 4), so a fixed placeholder is enough — it just
+# has to be present to keep agent_id in field 4. See the partition test.
 lane() {
   rm -rf "$LANE"; mkdir -p "$LANE"
   printf '%s\n' "$1" > "$LANE/timer-start"
   local kind ep id
   while read -r kind ep id; do
     [ -n "$kind" ] && printf '%s %s %s%s\n' "$kind" "$ep" \
-      "$(date -d "@$ep" +%H:%M:%S 2>/dev/null || echo 00:00:00)" "${id:+ $id}"
+      00:00:00 "${id:+ $id}"
   done > "$LANE/turn-log"
 }
 
