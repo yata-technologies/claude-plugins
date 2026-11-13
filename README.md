@@ -46,18 +46,45 @@ committed, so every teammate inherits it.
 
 ## Using it — end users
 
-**Nothing to install.** If you clone a repo that a manager already set up (above), the
-plugin activates itself:
+**One install per machine.** Git carries only the *enable flag*
+(`enabledPlugins` in `.claude/settings.json`) — it does **not** install the plugin. On
+every new machine (new PC, new WSL distro, fresh clone), run once from the repo's root:
 
-- **First session** — Claude Code reads `.claude/settings.json`, installs
-  `coyote-tracker` from the marketplace into **your own machine-local plugin cache**, and
-  the plugin's SessionStart hook scaffolds *your* git-ignored `settings.local.json`
-  (statusLine + allow-list). The work timer auto-starts; lead your first reply with the
-  🕐 clock to confirm it.
+```
+claude plugin install coyote-tracker@yatatechnologies --scope project
+```
+
+Skip it and Claude Code raises no error: no hook is registered, no timer runs, and your
+worklogs are saved with self-reported estimates instead of measured time — for weeks,
+until someone notices in Insights (COY-513, COY-593). Then walk the
+[new machine checklist](#new-machine-checklist) below.
+
+- **First session after the install** — the plugin (in **your own machine-local plugin
+  cache**) runs its SessionStart hook, which scaffolds *your* git-ignored
+  `settings.local.json` (statusLine + allow-list). The work timer auto-starts; lead your
+  first reply with the 🕐 clock to confirm it.
 - **Break commands** — type **`/:aw`** (away) and **`/:bk`** (back). The leading `/:`
   narrows autocomplete to exactly `/coyote-tracker:aw` / `/coyote-tracker:bk`. Do **not**
   type `/aw` / `/bk`: Claude Code resolves that prefix to a *different, unrelated* command
   and silently fires the wrong thing. There is no short-slash shorthand.
+
+### New machine checklist
+
+Replacing a PC is the moment every Tracker prerequisite drops at once, and each one fails
+**silently**. Run these from the repo's root (on Windows, **inside the WSL distro** — a
+`jq` or plugin on the Windows side is invisible to Claude Code in WSL). Don't start work
+until all four pass.
+
+| # | Check | Pass | If not |
+|---|---|---|---|
+| 1 | `jq -n 1` | prints `1` | `sudo apt install jq` (WSL/Ubuntu) / `brew install jq` (macOS). Every hook reads its input with jq |
+| 2 | `claude plugin list --json \| jq -r '.[] \| select(.id=="coyote-tracker@yatatechnologies") \| "\(.version) \(.projectPath)"'` | a line with **this repo's path** and version `0.13.4`+ (one line per installed repo; a worktree shows its main checkout's path) | `claude plugin install coyote-tracker@yatatechnologies --scope project` from the repo root. `enabledPlugins` alone is not enough (COY-513). Old version: see the bootstrap commands under *Auto-update* below |
+| 3 | start `claude`, read the statusline | shows `TIMER`, no `⚠` warning | `⚠ COYOTE TRACKER OFF — jq not installed` → #1. `⚠ TRACKER NOT INSTALLED — …` → run the command it prints, restart. `⚠ TRACKER OFF (no lane …)` → restart. Only cwd + branch, no `TIMER` and no warning → #2 |
+| 4 | after the first worklog, ask Claude to fetch it with `coyote_get_worklog` and show `agent_source` / `split_source` | `agent_source = coyote-tracker`, `split_source = mechanical` (or `stitched`) | empty `agent_source` / `split_source = manual` means no measured split was injected — redo 1–3, then report in Coyote's COY project |
+
+- **macOS needs `0.13.2`+** — earlier versions exited silently on GNU-only `date -d` and
+  never injected a measured split on a Mac.
+- These fields are not shown in the Coyote web UI — #4 has to go through the MCP.
 
 ### Auto-update (per user, automatic)
 
