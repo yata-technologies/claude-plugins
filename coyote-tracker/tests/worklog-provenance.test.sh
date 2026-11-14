@@ -15,10 +15,10 @@
 #     field lands in w_started and silently corrupts the COY-403 start-side
 #     nudge. The field-count case below pins that down.
 #
-# The passthrough cases matter as much as the injection one: an override or an
-# untracked window must stay exactly as it was, because emitting updatedInput
-# there would also mean emitting permissionDecision "allow" and newly
-# auto-approving calls that today go through the normal permission flow.
+# The passthrough cases matter as much as the injection one: an untracked window
+# must stay denied, and an override must keep the agent's split while stamping
+# split_source=override (COY-T869) under "ask" — never "allow", which would
+# newly auto-approve a call that today reaches a human.
 #
 # Run: bash coyote-tracker/tests/worklog-provenance.test.sh
 set -uo pipefail
@@ -174,15 +174,60 @@ is "the session id is not affected by the override" "$SID" "$(field "$out" agent
 teardown
 
 echo
-echo "COY-522 — passthrough paths stay passthrough (no new auto-approval)"
+echo "COY-T869 — an override keeps the agent's split but says it was overridden"
 setup; seed_lane
 touch "$LANE/worklog-split-override"
 out=$(run_pre)
-is "an override emits nothing at all" "" "$out"
+is "the override asks, never allows (no new auto-approval)" \
+   "ask" "$(printf '%s' "$out" | jq -r '.hookSpecificOutput.permissionDecision // "ABSENT"')"
+is "split_source is override" "override" "$(field "$out" split_source)"
+is "agent_session_id is stamped" "$SID" "$(field "$out" agent_session_id)"
+is "agent_source is stamped" "coyote-tracker" "$(field "$out" agent_source)"
+# The agent's own figures are the point of an override — none may be rewritten.
+is "the agent's seconds are kept"    "1"     "$(field "$out" seconds)"
+is "the agent's start_time is kept"  "09:00" "$(field "$out" start_time)"
+is "no measured AI figure is injected" "ABSENT" "$(field "$out" time_ai_seconds)"
+is "description is preserved" "did a thing" "$(field "$out" description)"
+# The lane's measurement rides alongside: both halves, consistent with each other.
+cs=$(field "$out" canonical_seconds); cai=$(field "$out" canonical_ai_seconds)
+case "$cs$cai" in
+  *ABSENT*|*PARSE_ERROR*|*[!0-9]*) bad "the measurement is carried as canonical_*" "two integers" "$cs / $cai" ;;
+  *) ok "the measurement is carried as canonical_*" ;;
+esac
+[ "${cai:-x}" -le "${cs:-0}" ] 2>/dev/null \
+  && ok  "canonical_ai_seconds does not exceed canonical_seconds" \
+  || bad "canonical_ai_seconds does not exceed canonical_seconds" "<= $cs" "$cai"
+# It must equal what the mechanical path would have injected as seconds. The
+# seeded AI turn is still open, so the measurement grows with the clock — allow
+# the couple of seconds between the hook's run and this one.
+measured=$(CLAUDE_PROJECT_DIR="$REPO" CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" "$BIN/worklog-split.sh" "$SID" 2>/dev/null | awk -F'\t' '{print $2 + $3}')
+drift=$(( ${measured:-0} - ${cs:-0} ))
+[ "$drift" -ge 0 ] && [ "$drift" -le 3 ] \
+  && ok  "canonical_seconds is the measured AI + Human" \
+  || bad "canonical_seconds is the measured AI + Human" "$measured (±3s)" "$cs"
+case "$(printf '%s' "$out" | jq -r '.hookSpecificOutput.permissionDecisionReason // ""')" in
+  *"split_source=override"*) ok  "the human is told what they are approving" ;;
+  *)                         bad "the human is told what they are approving" "mentions split_source=override" "(absent)" ;;
+esac
 [ -f "$LANE/worklog-split-override" ] \
   && bad "the override marker is still consumed" "consumed" "still present" \
   || ok  "the override marker is still consumed"
 teardown
+
+# The untracked-deny's escape hatch: nothing was measured, so no canonical pair
+# (the Worker takes both halves or neither) — but it is still an override.
+setup
+mkdir -p "$LANE"; touch "$LANE/worklog-split-override"
+out=$(run_pre)
+is "an untracked override is still split_source=override" "override" "$(field "$out" split_source)"
+is "an untracked override still asks" \
+   "ask" "$(printf '%s' "$out" | jq -r '.hookSpecificOutput.permissionDecision // "ABSENT"')"
+is "an untracked override carries no canonical_seconds"    "ABSENT" "$(field "$out" canonical_seconds)"
+is "…and no canonical_ai_seconds either"                   "ABSENT" "$(field "$out" canonical_ai_seconds)"
+teardown
+
+echo
+echo "COY-522 — the untracked window stays denied"
 
 setup   # no timer-start / turn-log => untracked window
 out=$(run_pre)

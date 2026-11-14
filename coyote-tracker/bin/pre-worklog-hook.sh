@@ -49,7 +49,7 @@
 # split_source requires Coyote MCP >= 1.33.0; the same update-ordering argument
 # as above applies (1.33.0 published 2026-09, well before this shipped).
 #
-# Passthrough (agent's own values honored, no injection):
+# Passthrough (agent's own split honored, no split injection):
 #   - override marker present ($LANE/worklog-split-override) — explicit human
 #     override for a backfill / sub-window record. One-shot: deleted on
 #     consumption so the next call re-engages injection.
@@ -62,14 +62,12 @@
 #     GNU-only `date -d`) skipped injection on every worklog for four months
 #     without anyone seeing it.
 #
-#   Neither passthrough path stamps provenance (agent_* or split_source),
-#   deliberately — so an override row lands as split_source=manual, not
-#   `override` (COY-T869 tracks revisiting this). Emitting an
-#   updatedInput there would mean also emitting permissionDecision "allow",
-#   which would newly auto-approve calls those paths currently leave to the
-#   normal permission flow — a bigger behavioural change than the provenance is
-#   worth on two rare branches. Such worklogs land with NULL provenance, which
-#   consumers must already tolerate (see the ambiguity note in COY-522).
+#   The override path keeps the agent's split but DOES stamp provenance —
+#   split_source=override, agent_*, and the lane's measurement as canonical_*
+#   (COY-T869) — under permissionDecision "ask", so the call still reaches a
+#   human rather than being newly auto-approved. The fail-open path stamps
+#   nothing: those worklogs land with NULL provenance (split_source=manual),
+#   which consumers must already tolerate (see the ambiguity note in COY-522).
 #
 # Denied (COY-402):
 #   - untracked window — no timer-start or no turn-log in the lane. There is no
@@ -175,8 +173,60 @@ LANE="$STATE_DIR/sessions/$sid"
 
 # Explicit human override (backfill, sub-window) — honor the agent's values.
 # One-shot: consume the marker so the next call re-engages injection.
+#
+# The split is left alone, but the row now says it was overridden (COY-T869):
+# split_source=override plus provenance, and — when the lane has a window — the
+# lane's measurement as canonical_seconds / canonical_ai_seconds, so the gap
+# between what was entered and what was measured is a column comparison
+# downstream (COY-538). Without this every override landed as
+# split_source=manual with no measurement, indistinguishable from the web form.
+#
+# The decision is "ask", not "allow". An updatedInput needs a decision, and
+# "allow" would newly auto-approve a call this path used to leave to the normal
+# permission flow — on the one path where the figures are, by definition, not
+# the measured ones. "ask" keeps a human in front of it, and the prompt shows
+# entered vs measured, which is the comparison the human is approving.
+#
+# With no window (the untracked-deny's escape hatch) nothing was measured, so
+# the canonical pair is omitted — the Worker takes both halves or neither.
+# The measurement is best-effort: if worklog-split.sh fails, the override still
+# goes out as `override`, just without canonical_*.
 if [ -f "$LANE/worklog-split-override" ]; then
   rm -f "$LANE/worklog-split-override"
+  ov_ai="" ov_human=""
+  if [ -f "$LANE/timer-start" ] && [ -f "$LANE/turn-log" ]; then
+    ov_out=$("$BIN_DIR/worklog-split.sh" "$sid" 2>/dev/null || true)
+    IFS=$'\t' read -r _ ov_ai ov_human _ <<< "$ov_out"
+    # Both halves must be integers, or neither is sent.
+    case "${ov_ai:-}"    in ''|*[!0-9]*) ov_ai="" ;; esac
+    case "${ov_human:-}" in ''|*[!0-9]*) ov_ai="" ;; esac
+  fi
+  if [ -n "$ov_ai" ]; then ov_cs=$(( ov_ai + ov_human )); else ov_cs=""; fi
+  out=$(printf '%s' "$input" | jq -c \
+    --arg sid8 "${sid:0:8}" \
+    --arg agentsid "$sid" \
+    --arg agentsrc "$agent_source" \
+    --arg cs "$ov_cs" \
+    --arg cai "$ov_ai" \
+    '.tool_input as $ti |
+     (if $cs != "" then {canonical_seconds: ($cs | tonumber), canonical_ai_seconds: ($cai | tonumber)} else {} end) as $canon |
+     ($ti.time_ai_seconds // "?" | tostring) as $eai |
+     ($ti.time_human_seconds // "?" | tostring) as $ehu |
+     (if $cs != "" then "measured AI \($cai)s of \($cs)s" else "nothing measured (no tracking window)" end) as $meas | {
+       hookSpecificOutput: {
+         hookEventName: "PreToolUse",
+         permissionDecision: "ask",
+         permissionDecisionReason: "Coyote Tracker (\($sid8)): worklog-split-override — this worklog is filed with the split YOU entered (AI \($eai)s / Human \($ehu)s), not the measured one (\($meas)). It will be stored as split_source=override.",
+         updatedInput: ($ti + {
+           agent_session_id: $agentsid,
+           agent_source: $agentsrc,
+           split_source: "override"
+         } + $canon),
+         additionalContext: "Coyote Tracker (\($sid8)): override consumed — your own seconds / time_ai_seconds / time_human_seconds / start_time are kept. Provenance was injected (agent_source=\($agentsrc), agent_session_id=\($agentsid), split_source=override\(if $cs != "" then ", canonical_seconds=\($cs), canonical_ai_seconds=\($cai)" else "" end)) — do not pass any of them yourself. The human is asked to approve this call. Say in the worklog description why the split was overridden."
+       }
+     }' 2>/dev/null) || bail "override marker consumed, but the override provenance could not be built (jq failed)"
+  [ -n "$out" ] || bail "override marker consumed, but the override provenance came out empty"
+  printf '%s' "$out"
   exit 0
 fi
 
