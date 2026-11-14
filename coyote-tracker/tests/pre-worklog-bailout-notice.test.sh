@@ -211,7 +211,11 @@ teardown
 setup; seed_lane
 touch "$LANE/worklog-split-override"
 run_pre
-is "the override marker is still a silent passthrough" "" "$OUT"
+is "the override asks (COY-T869), it does not bail" "ask" "$(decision_of)"
+case "$(ctx_of)" in
+  *"NOT injected"*) bad "the override carries no bailout notice" "override consumed" "NOT injected" ;;
+  *)                ok  "the override carries no bailout notice" ;;
+esac
 teardown
 
 setup

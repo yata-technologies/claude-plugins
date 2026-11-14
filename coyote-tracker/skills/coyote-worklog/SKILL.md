@@ -57,6 +57,11 @@ verbatim. The PreToolUse hook rejects a `coyote_create_worklog` whose split devi
 >60s from canonical, whose values don't sum to `seconds`, or whose `start_time` is absent
 or off from the lane's `timer-start`. To override (backfill/sub-window), confirm with the
 user, then `touch .claude/sessions/<sid>/worklog-split-override` (one-shot) and retry.
+Since 0.14.0 the overridden call is not silent (COY-T869): the hook keeps your split but
+stamps `split_source=override`, the provenance, and the lane's measurement
+(`canonical_seconds` / `canonical_ai_seconds`), and asks the user to approve the call. The
+prompt shows entered vs measured. Expect that prompt even when worklog creates are
+allow-listed, and still say in the description why the split was overridden.
 
 **Never pass `agent_session_id`, `agent_source` or `split_source` yourself.** Since 0.12.0 the
 same PreToolUse hook stamps the first two (COY-522), and since 0.13.3 `split_source`
