@@ -98,8 +98,34 @@ marketplace (directory source). **All stages passed.** Re-run this after any hoo
 **Prereqs:** a scratch consumer repo; the marketplace registered; Coyote MCP connected (for the
 injection stage) with a writable task slug.
 
-**Enable (project-scoped — the ONLY supported path, see the warning above):** in the consumer
-repo's `.claude/settings.json`:
+> **⚠️ Run the smoke test under a throwaway `CLAUDE_CONFIG_DIR` — never your everyday one.**
+> The marketplace registry (`<CLAUDE_CONFIG_DIR>/plugins/known_marketplaces.json`) is
+> **per machine and keyed by the manifest name** (`yatatechnologies`), not by the
+> `extraKnownMarketplaces` key — renaming the key (e.g. `yatatechnologies-dev`) does **not**
+> isolate anything: the source still registers as `yatatechnologies` and
+> `coyote-tracker@yatatechnologies-dev` fails with "not found in marketplace" (verified
+> 2026-11-17). So a scratch repo that declares the **directory** source, opened under your
+> normal config, silently re-points the marketplace for **every** consumer repo on the machine
+> to your local checkout — and they then run whatever version that checkout happens to be at.
+> This happened on 2026-11-17: opening the old scratch repo (`~/work/keyring`, unpulled since
+> 2026-09-29) downgraded coyote's Tracker from 0.14.0 to 0.12.1 (`plugin list` showed
+> `Read from: <local path>`). A separate config dir has its own registry and cache, so nothing
+> leaks:
+> ```bash
+> export CLAUDE_CONFIG_DIR=$HOME/.claude-tracker-smoke   # throwaway; log in once
+> cd /path/to/scratch-repo && claude
+> ```
+> Delete the scratch config dir and the scratch repo's directory-source declaration when done.
+> If an everyday `claude plugin list` ever shows `Read from: <local path>` for `coyote-tracker`,
+> find the repo declaring the directory source, remove it, and restore the github source
+> (edit `known_marketplaces.json` back to `{ source: github, repo: Yata-Technologies/claude-plugins }`,
+> then `claude plugin marketplace update yatatechnologies` and
+> `claude plugin update coyote-tracker@yatatechnologies --scope project` per affected repo).
+> Do **not** use `claude plugin marketplace remove` for this — it uninstalls the plugin and
+> edits the current dir's project settings.
+
+**Enable (project-scoped — the ONLY supported path, see the warning above):** in the scratch
+repo's `.claude/settings.json` (under the throwaway `CLAUDE_CONFIG_DIR` above):
 ```json
 {
   "extraKnownMarketplaces": { "yatatechnologies": { "source": { "source": "directory", "path": "/abs/path/to/claude-plugins" } } },
